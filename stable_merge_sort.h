@@ -47,7 +47,7 @@ template<int NT, int VT, typename KeysIt1, typename KeysIt2,
 __device__
 void DeviceMerge(KeysIt1 aKeys_global, int a_n,
                  KeysIt2 bKeys_global, int b_n,
-                 int tid, int block,
+                 int tid,
                  KeyType* keys_shared, int* indices_shared, KeysIt3 keys_global,
                  Comp comp)
 {
@@ -61,7 +61,7 @@ void DeviceMerge(KeysIt1 aKeys_global, int a_n,
   mgpu::DeviceThreadToShared<VT>(results, tid, keys_shared);
   
   // Store merged keys to global memory.
-  mgpu::DeviceSharedToGlobal<NT, VT>(a_n + b_n, keys_shared, tid, keys_global + NT * VT * block);
+  mgpu::DeviceSharedToGlobal<NT, VT>(a_n + b_n, keys_shared, tid, keys_global);
 }
 
 
@@ -139,8 +139,9 @@ void KernelMerge(KeysIt1 aKeys_global, int aCount,
   
   DeviceMerge<block_size, work_per_thread>(aKeys_global + range.x, range.y - range.x,
                                            bKeys_global + range.z, range.w - range.z,
-                                           tid, block, shared.keys, shared.indices, 
-                                           keys_global, comp);
+                                           tid, shared.keys, shared.indices, 
+                                           keys_global + block * work_per_block,
+                                           comp);
 }
 
 

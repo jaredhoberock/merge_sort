@@ -1,4 +1,5 @@
 #include "stable_merge_sort.h"
+#include "time_invocation_cuda.hpp"
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
 #include <algorithm>
@@ -51,6 +52,22 @@ void do_it(my_policy &exec, size_t n)
 }
 
 
+void my_sort(my_policy *exec, thrust::device_vector<int> *data)
+{
+  generate_random_data(*data);
+
+  stable_merge_sort(*exec, data->begin(), data->end(), thrust::less<int>());
+}
+
+
+void sean_sort(my_policy *exec, thrust::device_vector<int> *data)
+{
+  generate_random_data(*data);
+
+  mgpu::MergesortKeys(thrust::raw_pointer_cast(data->data()), data->size(), thrust::less<int>(), *exec->ctx);
+}
+
+
 int main()
 {
   my_policy exec;
@@ -60,6 +77,27 @@ int main()
     std::cout << "Testing n = " << n << std::endl;
     do_it(exec, n);
   }
+
+  for(int i = 0; i < 20; ++i)
+  {
+    size_t n = hash_functor()(i) % (1 << 20);
+
+    std::cout << "Testing n = " << n << std::endl;
+    do_it(exec, n);
+  }
+
+  thrust::device_vector<int> vec(1 << 24);
+
+  sean_sort(&exec, &vec);
+  double sean_msecs = time_invocation_cuda(20, sean_sort, &exec, &vec);
+
+  my_sort(&exec, &vec);
+  double my_msecs = time_invocation_cuda(20, my_sort, &exec, &vec);
+
+  std::cout << "Sean's time: " << sean_msecs << " ms" << std::endl;
+  std::cout << "My time: " << my_msecs << " ms" << std::endl;
+
+  std::cout << "My relative performance: " << my_msecs / sean_msecs << std::endl;
 
   return 0;
 }

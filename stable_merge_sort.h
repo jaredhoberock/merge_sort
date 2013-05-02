@@ -5,6 +5,7 @@
 #include <thrust/memory.h>
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>
+#include <thrust/system/cuda/detail/detail/uninitialized.h>
 
 
 struct my_policy
@@ -167,21 +168,23 @@ void staged_merge(Iterator1 first1, Size1 n1,
 {
   typedef typename thrust::iterator_value<Iterator3>::type value_type;
 
-  __shared__ value_type s_keys[block_size * (work_per_thread + 1)];
+  //__shared__ value_type s_keys[block_size * (work_per_thread + 1)];
+  using thrust::system::cuda::detail::detail::uninitialized_array;
+  __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
 
   // stage the input through shared memory.
-  block::copy_n_fast<block_size, work_per_thread>(first1, n1, s_keys);
-  block::copy_n_fast<block_size, work_per_thread>(first2, n2, s_keys + n1);
+  block::copy_n_fast<block_size, work_per_thread>(first1, n1, s_keys.begin());
+  block::copy_n_fast<block_size, work_per_thread>(first2, n2, s_keys.begin() + n1);
   //// XXX replacing copy_n_fast with copy_n results in a 10% performance hit
-  //block::copy_n<block_size>(first1, n1, s_keys); 
-  //block::copy_n<block_size>(first2, n2, s_keys + n1);
+  //block::copy_n<block_size>(first1, n1, s_keys.begin()); 
+  //block::copy_n<block_size>(first2, n2, s_keys.begin() + n1);
   __syncthreads();
 
   // cooperatively merge into smem
-  block::merge<block_size, work_per_thread>(s_keys, n1, s_keys + n1, n2, s_keys, comp);
+  block::merge<block_size, work_per_thread>(s_keys.begin(), n1, s_keys.begin() + n1, n2, s_keys.begin(), comp);
   
   // store result in smem to result
-  block::copy_n<block_size>(s_keys, n1 + n2, result);
+  block::copy_n<block_size>(s_keys.begin(), n1 + n2, result);
   __syncthreads();
 }
 

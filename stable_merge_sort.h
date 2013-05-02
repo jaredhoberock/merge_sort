@@ -1,11 +1,13 @@
 #include <iostream>
-#include <thrust/system/cuda/execution_policy.h>
 #include <moderngpu.cuh>
 #include <util/mgpucontext.h>
+#include <thrust/iterator/iterator_traits.h>
+#include <thrust/memory.h>
+#include <thrust/copy.h>
+#include <thrust/execution_policy.h>
 
 
 struct my_policy
-  : thrust::cuda::execution_policy<my_policy>
 {
   my_policy()
     : ctx(mgpu::CreateCudaDevice(0))
@@ -84,7 +86,8 @@ __device__ void merge(Iterator1 first1, Size1 n1,
   __syncthreads();
 
   // store the result
-  mgpu::DeviceThreadToShared<work_per_thread>(local_result, threadIdx.x, result);
+  thrust::copy_n(thrust::seq, local_result, work_per_thread, result + work_per_thread * threadIdx.x);
+  __syncthreads();
 }
 
 
@@ -167,11 +170,11 @@ void staged_merge(Iterator1 first1, Size1 n1,
   __shared__ value_type s_keys[block_size * (work_per_thread + 1)];
 
   // stage the input through shared memory.
-  // XXX replacing copy_n_fast with copy_n results in a 10% performance hit
-  //copy_n<block_size>(first1, n1, s_keys); 
-  //copy_n<block_size>(first2, n2, s_keys + n1);
-  copy_n_fast<block_size, work_per_thread>(first1, n1, s_keys);
-  copy_n_fast<block_size, work_per_thread>(first2, n2, s_keys + n1);
+  block::copy_n_fast<block_size, work_per_thread>(first1, n1, s_keys);
+  block::copy_n_fast<block_size, work_per_thread>(first2, n2, s_keys + n1);
+  //// XXX replacing copy_n_fast with copy_n results in a 10% performance hit
+  //block::copy_n<block_size>(first1, n1, s_keys); 
+  //block::copy_n<block_size>(first2, n2, s_keys + n1);
   __syncthreads();
 
   // cooperatively merge into smem

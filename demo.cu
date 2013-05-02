@@ -7,6 +7,9 @@
 #include <cassert>
 
 
+typedef int T;
+
+
 struct hash_functor
 {
   __host__ __device__
@@ -32,14 +35,14 @@ void generate_random_data(Vector &vec)
 
 void do_it(my_policy &exec, size_t n)
 {
-  std::vector<int> h_data(n);
+  std::vector<T> h_data(n);
   generate_random_data(h_data);
 
-  thrust::device_vector<int> d_data = h_data;
+  thrust::device_vector<T> d_data = h_data;
 
   std::stable_sort(h_data.begin(), h_data.end());
 
-  ::stable_merge_sort(exec, d_data.begin(), d_data.end(), thrust::less<int>());
+  ::stable_merge_sort(exec, d_data.begin(), d_data.end(), thrust::less<T>());
 
   cudaError_t error = cudaGetLastError();
 
@@ -52,19 +55,19 @@ void do_it(my_policy &exec, size_t n)
 }
 
 
-void my_sort(my_policy *exec, thrust::device_vector<int> *data)
+void my_sort(my_policy *exec, thrust::device_vector<T> *data)
 {
   generate_random_data(*data);
 
-  stable_merge_sort(*exec, data->begin(), data->end(), thrust::less<int>());
+  stable_merge_sort(*exec, data->begin(), data->end(), thrust::less<T>());
 }
 
 
-void sean_sort(my_policy *exec, thrust::device_vector<int> *data)
+void sean_sort(my_policy *exec, thrust::device_vector<T> *data)
 {
   generate_random_data(*data);
 
-  mgpu::MergesortKeys(thrust::raw_pointer_cast(data->data()), data->size(), thrust::less<int>(), *exec->ctx);
+  mgpu::MergesortKeys(thrust::raw_pointer_cast(data->data()), data->size(), thrust::less<T>(), *exec->ctx);
 }
 
 
@@ -86,7 +89,7 @@ int main()
     do_it(exec, n);
   }
 
-  thrust::device_vector<int> vec(1 << 24);
+  thrust::device_vector<T> vec(1 << 24);
 
   sean_sort(&exec, &vec);
   double sean_msecs = time_invocation_cuda(20, sean_sort, &exec, &vec);
@@ -97,7 +100,7 @@ int main()
   std::cout << "Sean's time: " << sean_msecs << " ms" << std::endl;
   std::cout << "My time: " << my_msecs << " ms" << std::endl;
 
-  std::cout << "My relative performance: " << my_msecs / sean_msecs << std::endl;
+  std::cout << "My relative performance: " << sean_msecs / my_msecs << std::endl;
 
   return 0;
 }

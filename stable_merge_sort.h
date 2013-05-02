@@ -71,29 +71,45 @@ void DeviceMergeKeysIndices(It1 first1, int a_n, It2 first2, int b_n, T* results
 }
 
 
-template<int NT, int VT, typename KeysIt1, typename KeysIt2,
-	typename KeysIt3, typename KeyType,
-	typename Comp>
-__device__
-void DeviceMerge(KeysIt1 aKeys_global, int a_n,
-                 KeysIt2 bKeys_global, int b_n,
-                 KeyType* keys_shared, KeysIt3 keys_global,
-                 Comp comp)
+namespace block
 {
-  // Load input into shared memory.
-  mgpu::DeviceLoad2ToShared<NT, VT, VT>(aKeys_global, a_n, bKeys_global, b_n, threadIdx.x, keys_shared);
 
-  KeyType results[VT];
-  DeviceMergeKeysIndices<NT, VT>(keys_shared, a_n,
-                                 keys_shared + a_n, b_n,
-                                 results, comp);
+
+template<unsigned int block_size,
+         unsigned int work_per_thread,
+         typename Iterator1,
+         typename Iterator2,
+         typename Iterator3,
+	 typename Compare>
+__device__
+void staged_merge(Iterator1 first1, int n1,
+                  Iterator2 first2, int n2,
+                  Iterator3 result,
+                  Compare comp)
+{
+  typedef typename thrust::iterator_value<Iterator3>::type value_type;
+
+  __shared__ value_type s_keys[block_size * (work_per_thread + 1)];
+
+  // stage the input through shared memory.
+  mgpu::DeviceLoad2ToShared<block_size, work_per_thread, work_per_thread>(first1, n1, first2, n2, threadIdx.x, s_keys);
+
+  // merge locally
+  value_type local_result[work_per_thread];
+  DeviceMergeKeysIndices<block_size, work_per_thread>(s_keys, n1,
+                                                      s_keys + n1, n2,
+                                                      local_result,
+                                                      comp);
   __syncthreads();
   
   // Store merge results back to shared memory.
-  mgpu::DeviceThreadToShared<VT>(results, threadIdx.x, keys_shared);
+  mgpu::DeviceThreadToShared<work_per_thread>(local_result, threadIdx.x, s_keys);
   
   // Store merged keys to global memory.
-  mgpu::DeviceSharedToGlobal<NT, VT>(a_n + b_n, keys_shared, threadIdx.x, keys_global);
+  mgpu::DeviceSharedToGlobal<block_size, work_per_thread>(n1 + n2, s_keys, threadIdx.x, result);
+}
+
+
 }
 
 
@@ -156,18 +172,15 @@ void KernelMerge(KeysIt1 aKeys_global, int aCount,
   const int block_size = Params::NT;
   const int work_per_thread = Params::VT;
   const int work_per_block = block_size * work_per_thread;
-
-  __shared__ KeyType keys[block_size * (work_per_thread + 1)];
   
   int block = blockIdx.x;
   
   int4 range = ComputeMergeRange(aCount, block, coop, work_per_block, mp_global);
   
-  DeviceMerge<block_size, work_per_thread>(aKeys_global + range.x, range.y - range.x,
-                                           bKeys_global + range.z, range.w - range.z,
-                                           keys, 
-                                           keys_global + block * work_per_block,
-                                           comp);
+  block::staged_merge<block_size, work_per_thread>(aKeys_global + range.x, range.y - range.x,
+                                                   bKeys_global + range.z, range.w - range.z,
+                                                   keys_global + block * work_per_block,
+                                                   comp);
 }
 
 

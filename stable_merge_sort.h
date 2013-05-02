@@ -59,35 +59,33 @@ namespace block
 
 template<unsigned int block_size,
          unsigned int work_per_thread,
-         typename Iterator1, typename Size1,
-         typename Iterator2, typename Size2,
-         typename Iterator3,
+         typename Iterator,
+         typename Size,
          typename Compare>
-__device__ void merge(Iterator1 first1, Size1 n1,
-                      Iterator2 first2, Size2 n2,
-                      Iterator3 result,
-                      Compare comp)
+__device__ void inplace_merge(Iterator first, Size n1, Size n2, Compare comp)
 {
-  int diag = work_per_thread * threadIdx.x;
-  int mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first1, n1, first2, n2, diag, comp);
+  Iterator first2 = first + n1;
+
+  Size diag = work_per_thread * threadIdx.x;
+  Size mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first, n1, first2, n2, diag, comp);
 
   // compute the ranges of the sources
-  int a0tid = mp;
-  int a1tid = n1;
-  int b0tid = diag - mp;
-  int b1tid = n2;
+  Size a0tid = mp;
+  Size a1tid = n1;
+  Size b0tid = diag - mp;
+  Size b1tid = n2;
   
   // each thread does a local sequential merge
-  typedef typename thrust::iterator_value<Iterator3>::type value_type;
+  typedef typename thrust::iterator_value<Iterator>::type value_type;
   value_type local_result[work_per_thread];
-  SerialMerge<work_per_thread>(first1 + a0tid, first1 + a1tid,
+  SerialMerge<work_per_thread>(first + a0tid, first + a1tid,
                                first2 + b0tid, first2 + b1tid,
                                local_result, comp);
 
   __syncthreads();
 
   // store the result
-  thrust::copy_n(thrust::seq, local_result, work_per_thread, result + work_per_thread * threadIdx.x);
+  thrust::copy_n(thrust::seq, local_result, work_per_thread, first + work_per_thread * threadIdx.x);
   __syncthreads();
 }
 
@@ -180,8 +178,8 @@ void staged_merge(Iterator1 first1, Size1 n1,
   //block::copy_n<block_size>(first2, n2, s_keys.begin() + n1);
   __syncthreads();
 
-  // cooperatively merge into smem
-  block::merge<block_size, work_per_thread>(s_keys.begin(), n1, s_keys.begin() + n1, n2, s_keys.begin(), comp);
+  // cooperatively merge in place
+  block::inplace_merge<block_size, work_per_thread>(s_keys.begin(), n1, n2, comp);
   
   // store result in smem to result
   block::copy_n<block_size>(s_keys.begin(), n1 + n2, result);

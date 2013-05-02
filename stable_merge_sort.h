@@ -50,40 +50,53 @@ void SerialMerge(Iterator1 first1, Iterator1 last1,
 }
 
 
-template<int NT, int VT, typename It1, typename It2, typename T, typename Comp>
-__device__
-void DeviceMergeKeysIndices(It1 first1, int a_n, It2 first2, int b_n, T* results, Comp comp)
-{
-  // Run a merge path to find the start of the serial merge for each thread.
-  int diag = VT * threadIdx.x;
-  int mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first1, a_n, first2, b_n, diag, comp);
-  
-  // Compute the ranges of the sources in shared memory.
-  int a0tid = mp;
-  int a1tid = a_n;
-  int b0tid = diag - mp;
-  int b1tid = b_n;
-  
-  // Serial merge into register.
-  SerialMerge<VT>(first1 + a0tid, first1 + a1tid,
-                  first2 + b0tid, first2 + b1tid,
-                  results, comp);
-}
-
-
 namespace block
 {
 
 
 template<unsigned int block_size,
          unsigned int work_per_thread,
-         typename Iterator1,
-         typename Iterator2,
+         typename Iterator1, typename Size1,
+         typename Iterator2, typename Size2,
+         typename Iterator3,
+         typename Compare>
+__device__ void merge(Iterator1 first1, Size1 n1,
+                      Iterator2 first2, Size2 n2,
+                      Iterator3 result,
+                      Compare comp)
+{
+  int diag = work_per_thread * threadIdx.x;
+  int mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first1, n1, first2, n2, diag, comp);
+
+  // compute the ranges of the sources
+  int a0tid = mp;
+  int a1tid = n1;
+  int b0tid = diag - mp;
+  int b1tid = n2;
+  
+  // each thread does a local sequential merge
+  typedef typename thrust::iterator_value<Iterator3>::type value_type;
+  value_type local_result[work_per_thread];
+  SerialMerge<work_per_thread>(first1 + a0tid, first1 + a1tid,
+                               first2 + b0tid, first2 + b1tid,
+                               local_result, comp);
+
+  __syncthreads();
+
+  // store the result
+  mgpu::DeviceThreadToShared<work_per_thread>(local_result, threadIdx.x, result);
+}
+
+
+template<unsigned int block_size,
+         unsigned int work_per_thread,
+         typename Iterator1, typename Size1,
+         typename Iterator2, typename Size2,
          typename Iterator3,
 	 typename Compare>
 __device__
-void staged_merge(Iterator1 first1, int n1,
-                  Iterator2 first2, int n2,
+void staged_merge(Iterator1 first1, Size1 n1,
+                  Iterator2 first2, Size2 n2,
                   Iterator3 result,
                   Compare comp)
 {
@@ -94,23 +107,15 @@ void staged_merge(Iterator1 first1, int n1,
   // stage the input through shared memory.
   mgpu::DeviceLoad2ToShared<block_size, work_per_thread, work_per_thread>(first1, n1, first2, n2, threadIdx.x, s_keys);
 
-  // merge locally
-  value_type local_result[work_per_thread];
-  DeviceMergeKeysIndices<block_size, work_per_thread>(s_keys, n1,
-                                                      s_keys + n1, n2,
-                                                      local_result,
-                                                      comp);
-  __syncthreads();
-  
-  // Store merge results back to shared memory.
-  mgpu::DeviceThreadToShared<work_per_thread>(local_result, threadIdx.x, s_keys);
+  // cooperatively merge into smem
+  block::merge<block_size, work_per_thread>(s_keys, n1, s_keys + n1, n2, s_keys, comp);
   
   // Store merged keys to global memory.
   mgpu::DeviceSharedToGlobal<block_size, work_per_thread>(n1 + n2, s_keys, threadIdx.x, result);
 }
 
 
-}
+} // end block
 
 
 // Returns (a0, a1, b0, b1) into mergesort input lists between mp0 and mp1.

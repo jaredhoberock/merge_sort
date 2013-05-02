@@ -70,16 +70,16 @@ __device__ void inplace_merge(Iterator first, Size n1, Size n2, Compare comp)
   Size mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first, n1, first2, n2, diag, comp);
 
   // compute the ranges of the sources
-  Size a0tid = mp;
-  Size a1tid = n1;
-  Size b0tid = diag - mp;
-  Size b1tid = n2;
+  Size start1 = mp;
+  Size end1 = n1;
+  Size start2 = diag - mp;
+  Size end2 = n2;
   
   // each thread does a local sequential merge
   typedef typename thrust::iterator_value<Iterator>::type value_type;
   value_type local_result[work_per_thread];
-  SerialMerge<work_per_thread>(first + a0tid, first + a1tid,
-                               first2 + b0tid, first2 + b1tid,
+  SerialMerge<work_per_thread>(first  + start1, first  + end1,
+                               first2 + start2, first2 + end2,
                                local_result, comp);
 
   __syncthreads();

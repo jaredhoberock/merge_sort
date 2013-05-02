@@ -52,24 +52,21 @@ void SerialMerge(Iterator1 first1, Iterator1 last1,
 
 template<int NT, int VT, typename It1, typename It2, typename T, typename Comp>
 __device__
-void DeviceMergeKeysIndices(It1 a_global, int a_n, It2 b_global, int b_n, T* keys_shared, T* results, Comp comp)
+void DeviceMergeKeysIndices(It1 first1, int a_n, It2 first2, int b_n, T* results, Comp comp)
 {
-  // Load the data into shared memory.
-  mgpu::DeviceLoad2ToShared<NT, VT, VT>(a_global, a_n, b_global, b_n, threadIdx.x, keys_shared);
-  
   // Run a merge path to find the start of the serial merge for each thread.
   int diag = VT * threadIdx.x;
-  int mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(keys_shared, a_n, keys_shared + a_n, b_n, diag, comp);
+  int mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first1, a_n, first2, b_n, diag, comp);
   
   // Compute the ranges of the sources in shared memory.
   int a0tid = mp;
   int a1tid = a_n;
-  int b0tid = a_n + diag - mp;
-  int b1tid = a_n + b_n;
+  int b0tid = diag - mp;
+  int b1tid = b_n;
   
   // Serial merge into register.
-  SerialMerge<VT>(keys_shared + a0tid, keys_shared + a1tid,
-                  keys_shared + b0tid, keys_shared + b1tid,
+  SerialMerge<VT>(first1 + a0tid, first1 + a1tid,
+                  first2 + b0tid, first2 + b1tid,
                   results, comp);
 }
 
@@ -83,11 +80,13 @@ void DeviceMerge(KeysIt1 aKeys_global, int a_n,
                  KeyType* keys_shared, KeysIt3 keys_global,
                  Comp comp)
 {
-  KeyType results[VT];
-  DeviceMergeKeysIndices<NT, VT>(aKeys_global, a_n,
-                                 bKeys_global, b_n,
-                                 keys_shared, results, comp);
+  // Load input into shared memory.
+  mgpu::DeviceLoad2ToShared<NT, VT, VT>(aKeys_global, a_n, bKeys_global, b_n, threadIdx.x, keys_shared);
 
+  KeyType results[VT];
+  DeviceMergeKeysIndices<NT, VT>(keys_shared, a_n,
+                                 keys_shared + a_n, b_n,
+                                 results, comp);
   __syncthreads();
   
   // Store merge results back to shared memory.

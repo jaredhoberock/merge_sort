@@ -88,6 +88,68 @@ __device__ void merge(Iterator1 first1, Size1 n1,
 }
 
 
+template<unsigned int block_size, typename Iterator1, typename Size, typename Iterator2>
+__device__
+void copy_n(Iterator1 first, Size n, Iterator2 result)
+{
+  for(Size i = threadIdx.x; i < n; i += block_size)
+  {
+    result[i] = first[i];
+  }
+}
+
+
+template<unsigned int block_size, unsigned int work_per_thread, typename Iterator1, typename Size, typename Iterator2>
+__device__
+void copy_n_fast(Iterator1 first, Size n, Iterator2 result)
+{
+  typedef typename thrust::iterator_value<Iterator1>::type value_type;
+
+  // stage copy through registers
+  value_type reg[work_per_thread];
+
+  // avoid conditional accesses when possible
+  if(n >= block_size * work_per_thread)
+  {
+    for(unsigned int i = 0; i < work_per_thread; ++i)
+    {
+      unsigned int idx = block_size * i + threadIdx.x;
+
+      reg[i] = first[idx];
+    }
+  }
+  else
+  {
+    for(unsigned int i = 0; i < work_per_thread; ++i)
+    {
+      unsigned int idx = block_size * i + threadIdx.x;
+
+      if(idx < n) reg[i] = first[idx];
+    }
+  }
+
+  // avoid conditional accesses when possible
+  if(n >= block_size * work_per_thread)
+  {
+    for(unsigned int i = 0; i < work_per_thread; ++i)
+    {
+      unsigned int idx = block_size * i + threadIdx.x;
+
+      result[idx] = reg[i];
+    }
+  }
+  else
+  {
+    for(unsigned int i = 0; i < work_per_thread; ++i)
+    {
+      unsigned int idx = block_size * i + threadIdx.x;
+
+      if(idx < n) result[idx] = reg[i];
+    }
+  }
+}
+
+
 template<unsigned int block_size,
          unsigned int work_per_thread,
          typename Iterator1, typename Size1,
@@ -105,13 +167,19 @@ void staged_merge(Iterator1 first1, Size1 n1,
   __shared__ value_type s_keys[block_size * (work_per_thread + 1)];
 
   // stage the input through shared memory.
-  mgpu::DeviceLoad2ToShared<block_size, work_per_thread, work_per_thread>(first1, n1, first2, n2, threadIdx.x, s_keys);
+  // XXX replacing copy_n_fast with copy_n results in a 10% performance hit
+  //copy_n<block_size>(first1, n1, s_keys); 
+  //copy_n<block_size>(first2, n2, s_keys + n1);
+  copy_n_fast<block_size, work_per_thread>(first1, n1, s_keys);
+  copy_n_fast<block_size, work_per_thread>(first2, n2, s_keys + n1);
+  __syncthreads();
 
   // cooperatively merge into smem
   block::merge<block_size, work_per_thread>(s_keys, n1, s_keys + n1, n2, s_keys, comp);
   
-  // Store merged keys to global memory.
-  mgpu::DeviceSharedToGlobal<block_size, work_per_thread>(n1 + n2, s_keys, threadIdx.x, result);
+  // store result in smem to result
+  block::copy_n<block_size>(s_keys, n1 + n2, result);
+  __syncthreads();
 }
 
 
@@ -199,7 +267,9 @@ void stable_merge_sort(my_policy &exec,
   typename thrust::iterator_difference<RandomAccessIterator>::type n = last - first;
 
   const int block_size = 256;
-  const int work_per_thread = 7;
+
+  const int work_per_thread = (sizeof(T) < 8) ?  11 : 7;
+
   typedef mgpu::LaunchBoxVT<block_size, work_per_thread> Tuning;
   int2 launch = Tuning::GetLaunchParams(*exec.ctx);
   

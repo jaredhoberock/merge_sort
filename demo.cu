@@ -1,7 +1,7 @@
 #include "stable_merge_sort.h"
 #include "time_invocation_cuda.hpp"
 #include <thrust/device_vector.h>
-#include <thrust/execution_policy.h>
+#include <thrust/tabulate.h>
 #include <algorithm>
 #include <vector>
 #include <cassert>

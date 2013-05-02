@@ -19,15 +19,46 @@ namespace stable_merge_sort_detail
 {
 
 
+template<int VT, typename Iterator1, typename Iterator2, typename Iterator3, typename Compare>
+__device__
+void SerialMerge(Iterator1 first1, Iterator1 last1,
+                 Iterator2 first2, Iterator2 last2,
+                 Iterator3 result,
+                 Compare comp)
+{ 
+  typename thrust::iterator_value<Iterator1>::type aKey = *first1;
+  typename thrust::iterator_value<Iterator2>::type bKey = *first2;
+  
+  #pragma unroll
+  for(int i = 0; i < VT; ++i, ++result)
+  {
+    bool p = (first2 >= last2) || ((first1 < last1) && !comp(bKey, aKey));
+    
+    *result = p ? aKey : bKey;
+    
+    if(p)
+    {
+      ++first1;
+      aKey = *first1;
+    }
+    else
+    {
+      ++first2;
+      bKey = *first2;
+    }
+  }
+}
+
+
 template<int NT, int VT, typename It1, typename It2, typename T, typename Comp>
 __device__
-void DeviceMergeKeysIndices(It1 a_global, int a_n, It2 b_global, int b_n, int tid, T* keys_shared, T* results, int* indices, Comp comp)
+void DeviceMergeKeysIndices(It1 a_global, int a_n, It2 b_global, int b_n, T* keys_shared, T* results, Comp comp)
 {
   // Load the data into shared memory.
-  mgpu::DeviceLoad2ToShared<NT, VT, VT>(a_global, a_n, b_global, b_n, tid, keys_shared);
+  mgpu::DeviceLoad2ToShared<NT, VT, VT>(a_global, a_n, b_global, b_n, threadIdx.x, keys_shared);
   
   // Run a merge path to find the start of the serial merge for each thread.
-  int diag = VT * tid;
+  int diag = VT * threadIdx.x;
   int mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(keys_shared, a_n, keys_shared + a_n, b_n, diag, comp);
   
   // Compute the ranges of the sources in shared memory.
@@ -37,7 +68,9 @@ void DeviceMergeKeysIndices(It1 a_global, int a_n, It2 b_global, int b_n, int ti
   int b1tid = a_n + b_n;
   
   // Serial merge into register.
-  mgpu::SerialMerge<VT, true>(keys_shared, a0tid, a1tid, b0tid, b1tid, results, indices, comp);
+  SerialMerge<VT>(keys_shared + a0tid, keys_shared + a1tid,
+                  keys_shared + b0tid, keys_shared + b1tid,
+                  results, comp);
 }
 
 
@@ -47,21 +80,21 @@ template<int NT, int VT, typename KeysIt1, typename KeysIt2,
 __device__
 void DeviceMerge(KeysIt1 aKeys_global, int a_n,
                  KeysIt2 bKeys_global, int b_n,
-                 int tid,
-                 KeyType* keys_shared, int* indices_shared, KeysIt3 keys_global,
+                 KeyType* keys_shared, KeysIt3 keys_global,
                  Comp comp)
 {
   KeyType results[VT];
-  int indices[VT];
   DeviceMergeKeysIndices<NT, VT>(aKeys_global, a_n,
                                  bKeys_global, b_n,
-                                 tid, keys_shared, results, indices, comp);
+                                 keys_shared, results, comp);
+
+  __syncthreads();
   
   // Store merge results back to shared memory.
-  mgpu::DeviceThreadToShared<VT>(results, tid, keys_shared);
+  mgpu::DeviceThreadToShared<VT>(results, threadIdx.x, keys_shared);
   
   // Store merged keys to global memory.
-  mgpu::DeviceSharedToGlobal<NT, VT>(a_n + b_n, keys_shared, tid, keys_global);
+  mgpu::DeviceSharedToGlobal<NT, VT>(a_n + b_n, keys_shared, threadIdx.x, keys_global);
 }
 
 
@@ -124,22 +157,16 @@ void KernelMerge(KeysIt1 aKeys_global, int aCount,
   const int block_size = Params::NT;
   const int work_per_thread = Params::VT;
   const int work_per_block = block_size * work_per_thread;
-  union Shared
-  {
-    // XXX why the extra element per thread?
-    KeyType keys[block_size * (work_per_thread + 1)];
-    int indices[work_per_block];
-  };
-  __shared__ Shared shared;
+
+  __shared__ KeyType keys[block_size * (work_per_thread + 1)];
   
-  int tid = threadIdx.x;
   int block = blockIdx.x;
   
   int4 range = ComputeMergeRange(aCount, block, coop, work_per_block, mp_global);
   
   DeviceMerge<block_size, work_per_thread>(aKeys_global + range.x, range.y - range.x,
                                            bKeys_global + range.z, range.w - range.z,
-                                           tid, shared.keys, shared.indices, 
+                                           keys, 
                                            keys_global + block * work_per_block,
                                            comp);
 }

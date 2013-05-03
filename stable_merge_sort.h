@@ -6,6 +6,7 @@
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>
 #include <thrust/system/cuda/detail/detail/uninitialized.h>
+#include <thrust/merge.h>
 
 
 struct my_policy
@@ -22,69 +23,19 @@ namespace stable_merge_sort_detail
 {
 
 
-template<unsigned int block_size, typename T>
-inline __device__
-T right_neighbor(const T &x, const T &boundary)
-{
-  using thrust::system::cuda::detail::detail::uninitialized_array;
-
-  // stage this shift to conserve smem
-  const unsigned int storage_size = block_size / 2;
-  __shared__ uninitialized_array<T,storage_size> shared;
-
-  T result = x;
-
-  unsigned int tid = threadIdx.x;
-
-  if(0 < tid && tid <= storage_size)
-  {
-    shared[tid - 1] = x;
-  }
-
-  __syncthreads();
-
-  if(tid < storage_size)
-  {
-    result = shared[tid];
-  }
-
-  __syncthreads();
-  
-  tid -= storage_size;
-  if(0 < tid && tid <= storage_size)
-  {
-    shared[tid - 1] = x;
-  }
-  else if(tid == 0)
-  {
-    shared[storage_size-1] = boundary;
-  }
-
-  __syncthreads();
-
-  if(tid < storage_size)
-  {
-    result = shared[tid];
-  }
-
-  __syncthreads();
-
-  return result;
-}
-
-
-template<int VT, typename Iterator1, typename Iterator2, typename Iterator3, typename Compare>
+// sequential merge for when we have a static bound on the size of the result
+template<unsigned int result_size_bound, typename Iterator1, typename Iterator2, typename Iterator3, typename Compare>
 __device__
-void SerialMerge(Iterator1 first1, Iterator1 last1,
-                 Iterator2 first2, Iterator2 last2,
-                 Iterator3 result,
-                 Compare comp)
+void sequential_bounded_merge(Iterator1 first1, Iterator1 last1,
+                              Iterator2 first2, Iterator2 last2,
+                              Iterator3 result,
+                              Compare comp)
 { 
   typename thrust::iterator_value<Iterator1>::type aKey = *first1;
   typename thrust::iterator_value<Iterator2>::type bKey = *first2;
   
   #pragma unroll
-  for(int i = 0; i < VT; ++i, ++result)
+  for(int i = 0; i < result_size_bound; ++i, ++result)
   {
     bool p = (first2 >= last2) || ((first1 < last1) && !comp(bKey, aKey));
     
@@ -108,68 +59,68 @@ namespace block
 {
 
 
-template<unsigned int block_size,
-         unsigned int work_per_thread,
-         typename Iterator1,
+template<typename Iterator1,
          typename Size,
          typename Iterator2,
          typename Iterator3,
          typename Compare>
-__device__ void merge(Iterator1 first1, Size n1,
+__device__ void merge(unsigned int work_per_thread,
+                      Iterator1 first1, Size n1,
                       Iterator2 first2, Size n2,
                       Iterator3 result,
                       Compare comp)
 {
-  Size diag = work_per_thread * threadIdx.x;
+  Size diag = min(n1 + n2, work_per_thread * threadIdx.x);
   Size mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first1, n1, first2, n2, diag, comp);
 
   // compute the ranges of the sources
   Size start1 = mp;
   Size start2 = diag - mp;
 
-  // shuffle to find the end of the sources
-  Size end1 = right_neighbor<block_size>(start1, n1);
-  Size end2 = right_neighbor<block_size>(start2, n2);
-  
-  // each thread does a local sequential merge
-  typedef typename thrust::iterator_value<Iterator1>::type value_type;
-  value_type local_result[work_per_thread];
-  SerialMerge<work_per_thread>(first1 + start1, first1 + end1,
-                               first2 + start2, first2 + end2,
-                               local_result, comp);
+  Size right_diag = min(n1 + n2, diag + work_per_thread);
+  // XXX we could alternatively shuffle to find the right_mp
+  Size right_mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first1, n1, first2, n2, right_diag, comp);
+  Size end1 = right_mp;
+  Size end2 = right_diag - right_mp;
 
-  __syncthreads();
-
-  // store the result
-  thrust::copy_n(thrust::seq, local_result, end1 - start1 + end2 - start2, result + work_per_thread * threadIdx.x);
+  // each thread does a sequential merge
+  thrust::merge(thrust::seq,
+                first1 + start1, first1 + end1,
+                first2 + start2, first2 + end2,
+                result + work_per_thread * threadIdx.x,
+                comp);
   __syncthreads();
 }
 
 
+// block-wise inplace merge for when we have a static bound on the size of the result (block_size * work_per_thread)
 template<unsigned int block_size,
          unsigned int work_per_thread,
          typename Iterator,
          typename Size,
          typename Compare>
-__device__ void inplace_merge(Iterator first, Size n1, Size n2, Compare comp)
+__device__ void bounded_inplace_merge(Iterator first, Size n1, Size n2, Compare comp)
 {
   Iterator first2 = first + n1;
 
-  Size diag = work_per_thread * threadIdx.x;
+  // don't ask for an out-of-bounds diagonal
+  Size diag = min(n1 + n2, work_per_thread * threadIdx.x);
+
   Size mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first, n1, first2, n2, diag, comp);
 
   // compute the ranges of the sources
   Size start1 = mp;
   Size start2 = diag - mp;
+
   Size end1 = n1;
   Size end2 = n2;
   
   // each thread does a local sequential merge
   typedef typename thrust::iterator_value<Iterator>::type value_type;
   value_type local_result[work_per_thread];
-  SerialMerge<work_per_thread>(first  + start1, first  + end1,
-                               first2 + start2, first2 + end2,
-                               local_result, comp);
+  sequential_bounded_merge<work_per_thread>(first  + start1, first  + end1,
+                                            first2 + start2, first2 + end2,
+                                            local_result, comp);
 
   __syncthreads();
 
@@ -242,6 +193,7 @@ void copy_n_fast(Iterator1 first, Size n, Iterator2 result)
 }
 
 
+// staged, block-wise merge for when we have a static bound on the size of the result (block_size * work_per_thread)
 template<unsigned int block_size,
          unsigned int work_per_thread,
          typename Iterator1, typename Size1,
@@ -249,10 +201,10 @@ template<unsigned int block_size,
          typename Iterator3,
 	 typename Compare>
 __device__
-void staged_merge(Iterator1 first1, Size1 n1,
-                  Iterator2 first2, Size2 n2,
-                  Iterator3 result,
-                  Compare comp)
+void staged_bounded_merge(Iterator1 first1, Size1 n1,
+                          Iterator2 first2, Size2 n2,
+                          Iterator3 result,
+                          Compare comp)
 {
   typedef typename thrust::iterator_value<Iterator3>::type value_type;
 
@@ -260,15 +212,13 @@ void staged_merge(Iterator1 first1, Size1 n1,
   __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
 
   // stage the input through shared memory.
+  // XXX replacing copy_n_fast with copy_n results in a 10% performance hit
   block::copy_n_fast<block_size, work_per_thread>(first1, n1, s_keys.begin());
   block::copy_n_fast<block_size, work_per_thread>(first2, n2, s_keys.begin() + n1);
-  //// XXX replacing copy_n_fast with copy_n results in a 10% performance hit
-  //block::copy_n<block_size>(first1, n1, s_keys.begin()); 
-  //block::copy_n<block_size>(first2, n2, s_keys.begin() + n1);
   __syncthreads();
 
   // cooperatively merge in place
-  block::inplace_merge<block_size, work_per_thread>(s_keys.begin(), n1, n2, comp);
+  block::bounded_inplace_merge<block_size, work_per_thread>(s_keys.begin(), n1, n2, comp);
   
   // store result in smem to result
   block::copy_n<block_size>(s_keys.begin(), n1 + n2, result);
@@ -343,10 +293,10 @@ void KernelMerge(KeysIt1 aKeys_global, int aCount,
   
   int4 range = ComputeMergeRange(aCount, block, coop, work_per_block, mp_global);
   
-  block::staged_merge<block_size, work_per_thread>(aKeys_global + range.x, range.y - range.x,
-                                                   bKeys_global + range.z, range.w - range.z,
-                                                   keys_global + block * work_per_block,
-                                                   comp);
+  block::staged_bounded_merge<block_size, work_per_thread>(aKeys_global + range.x, range.y - range.x,
+                                                           bKeys_global + range.z, range.w - range.z,
+                                                           keys_global + block * work_per_block,
+                                                           comp);
 }
 
 

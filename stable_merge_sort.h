@@ -7,6 +7,7 @@
 #include <thrust/execution_policy.h>
 #include <thrust/system/cuda/detail/detail/uninitialized.h>
 #include <thrust/merge.h>
+#include <thrust/tuple.h>
 
 
 struct my_policy
@@ -231,7 +232,7 @@ void staged_bounded_merge(Iterator1 first1, Size1 n1,
 
 // Returns (start1, end1, start2, end2) into mergesort input lists between mp0 and mp1.
 __host__ __device__
-int4 find_mergesort_interval(int3 frame, int num_blocks_per_partition, int block_idx, int num_elements_per_block, int n, int mp, int right_mp)
+thrust::tuple<int,int,int,int> find_mergesort_interval(int3 frame, int num_blocks_per_partition, int block_idx, int num_elements_per_block, int n, int mp, int right_mp)
 {
   // Locate diag from the start of the A sublist.
   int diag = num_elements_per_block * block_idx - frame.x;
@@ -251,18 +252,18 @@ int4 find_mergesort_interval(int3 frame, int num_blocks_per_partition, int block
     end2 = min(n, frame.y + frame.z);
   }
 
-  return make_int4(start1, end1, start2, end2);
+  return thrust::make_tuple(start1, end1, start2, end2);
 }
 
 
 __host__ __device__
-int4 locate_merge_partitions(int n, int block_idx, int num_blocks_per_partition, int num_elements_per_block, int mp, int right_mp)
+thrust::tuple<int,int,int,int> locate_merge_partitions(int n, int block_idx, int num_blocks_per_merge, int num_elements_per_block, int mp, int right_mp)
 {
-  int start = ~(num_blocks_per_partition - 1) & block_idx;
-  int size = num_elements_per_block * (num_blocks_per_partition >> 1);
-  int3 frame = make_int3(num_elements_per_block * start, num_elements_per_block * start + size, size);
+  int first_block_in_partition = ~(num_blocks_per_merge - 1) & block_idx;
+  int size = num_elements_per_block * (num_blocks_per_merge >> 1);
+  int3 frame = make_int3(num_elements_per_block * first_block_in_partition, num_elements_per_block * first_block_in_partition + size, size);
 
-  return find_mergesort_interval(frame, num_blocks_per_partition, block_idx, num_elements_per_block, n, mp, right_mp);
+  return find_mergesort_interval(frame, num_blocks_per_merge, block_idx, num_elements_per_block, n, mp, right_mp);
 }
 
 
@@ -274,7 +275,7 @@ template<unsigned int block_size,
          typename Iterator3,
          typename Compare>
 __global__
-void merge_adjacent_partitions(Size num_blocks_per_partition,
+void merge_adjacent_partitions(Size num_blocks_per_merge,
                                Iterator1 first, Size n,
                                Iterator2 merge_paths,
                                Iterator3 result,
@@ -282,10 +283,13 @@ void merge_adjacent_partitions(Size num_blocks_per_partition,
 {
   const int work_per_block = block_size * work_per_thread;
   
-  int4 range = locate_merge_partitions(n, blockIdx.x, num_blocks_per_partition, work_per_block, merge_paths[blockIdx.x], merge_paths[blockIdx.x + 1]);
+  int start1 = 0, end1 = 0, start2 = 0, end2 = 0;
+
+  thrust::tie(start1,end1,start2,end2) =
+    locate_merge_partitions(n, blockIdx.x, num_blocks_per_merge, work_per_block, merge_paths[blockIdx.x], merge_paths[blockIdx.x + 1]);
   
-  block::staged_bounded_merge<block_size, work_per_thread>(first + range.x, range.y - range.x,
-                                                           first + range.z, range.w - range.z,
+  block::staged_bounded_merge<block_size, work_per_thread>(first + start1, end1 - start1,
+                                                           first + start2, end2 - start2,
                                                            result + blockIdx.x * work_per_block,
                                                            comp);
 }

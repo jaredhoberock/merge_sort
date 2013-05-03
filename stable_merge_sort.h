@@ -229,73 +229,64 @@ void staged_bounded_merge(Iterator1 first1, Size1 n1,
 } // end block
 
 
-// Returns (a0, a1, b0, b1) into mergesort input lists between mp0 and mp1.
+// Returns (start1, end1, start2, end2) into mergesort input lists between mp0 and mp1.
 __host__ __device__
-int4 FindMergesortInterval(int3 frame, int coop, int block, int nv, int count, int mp0, int mp1)
+int4 find_mergesort_interval(int3 frame, int num_blocks_per_partition, int block_idx, int num_elements_per_block, int n, int mp, int right_mp)
 {
   // Locate diag from the start of the A sublist.
-  int diag = nv * block - frame.x;
-  int a0 = frame.x + mp0;
-  int a1 = min(count, frame.x + mp1);
-  int b0 = min(count, frame.y + diag - mp0);
-  int b1 = min(count, frame.y + diag + nv - mp1);
+  int diag = num_elements_per_block * block_idx - frame.x;
+  int start1 = frame.x + mp;
+  int end1 = min(n, frame.x + right_mp);
+  int start2 = min(n, frame.y + diag - mp);
+  int end2 = min(n, frame.y + diag + num_elements_per_block - right_mp);
   
   // The end partition of the last block for each merge operation is computed
   // and stored as the begin partition for the subsequent merge. i.e. it is
   // the same partition but in the wrong coordinate system, so its 0 when it
   // should be listSize. Correct that by checking if this is the last block
   // in this merge operation.
-  if(coop - 1 == ((coop - 1) & block))
+  if(num_blocks_per_partition - 1 == ((num_blocks_per_partition - 1) & block_idx))
   {
-    a1 = min(count, frame.x + frame.z);
-    b1 = min(count, frame.y + frame.z);
+    end1 = min(n, frame.x + frame.z);
+    end2 = min(n, frame.y + frame.z);
   }
 
-  return make_int4(a0, a1, b0, b1);
+  return make_int4(start1, end1, start2, end2);
 }
 
 
 __host__ __device__
-int4 ComputeMergeRange(int aCount, int block, int coop, int num_elements_per_block, const int* mp_global)
+int4 locate_merge_partitions(int n, int block_idx, int num_blocks_per_partition, int num_elements_per_block, int mp, int right_mp)
 {
-  // Load the merge paths computed by the partitioning kernel.
-  int mp0 = mp_global[block];
-  int mp1 = mp_global[block + 1];
-
-  // coop is the number of CTAs cooperating to merge two lists into
-  // one. We round block down to the first CTA's ID that is working on this
-  // merge.
-  int start = ~(coop - 1) & block;
-  int size = num_elements_per_block * (coop >> 1);
+  int start = ~(num_blocks_per_partition - 1) & block_idx;
+  int size = num_elements_per_block * (num_blocks_per_partition >> 1);
   int3 frame = make_int3(num_elements_per_block * start, num_elements_per_block * start + size, size);
 
-  return FindMergesortInterval(frame, coop, block, num_elements_per_block, aCount, mp0, mp1);
+  return find_mergesort_interval(frame, num_blocks_per_partition, block_idx, num_elements_per_block, n, mp, right_mp);
 }
 
 
-template<typename Tuning, bool MergeSort, typename KeysIt1, 
-         typename KeysIt2, typename KeysIt3,
-         typename Comp>
-MGPU_LAUNCH_BOUNDS
-void KernelMerge(KeysIt1 aKeys_global, int aCount,
-                 KeysIt2 bKeys_global, int bCount,
-                 const int* mp_global, int coop, KeysIt3 keys_global,
-                 Comp comp)
+template<unsigned int block_size,
+         unsigned int work_per_thread,
+         typename Size,
+         typename Iterator1,
+         typename Iterator2,
+         typename Iterator3,
+         typename Compare>
+__global__
+void merge_adjacent_partitions(Size num_blocks_per_partition,
+                               Iterator1 first, Size n,
+                               Iterator2 merge_paths,
+                               Iterator3 result,
+                               Compare comp)
 {
-  typedef MGPU_LAUNCH_PARAMS Params;
-  typedef typename std::iterator_traits<KeysIt1>::value_type KeyType;
-  
-  const int block_size = Params::NT;
-  const int work_per_thread = Params::VT;
   const int work_per_block = block_size * work_per_thread;
   
-  int block = blockIdx.x;
+  int4 range = locate_merge_partitions(n, blockIdx.x, num_blocks_per_partition, work_per_block, merge_paths[blockIdx.x], merge_paths[blockIdx.x + 1]);
   
-  int4 range = ComputeMergeRange(aCount, block, coop, work_per_block, mp_global);
-  
-  block::staged_bounded_merge<block_size, work_per_thread>(aKeys_global + range.x, range.y - range.x,
-                                                           bKeys_global + range.z, range.w - range.z,
-                                                           keys_global + block * work_per_block,
+  block::staged_bounded_merge<block_size, work_per_thread>(first + range.x, range.y - range.x,
+                                                           first + range.z, range.w - range.z,
+                                                           result + blockIdx.x * work_per_block,
                                                            comp);
 }
 
@@ -335,7 +326,7 @@ void stable_merge_sort(my_policy &exec,
     MGPU_MEM(int) partitionsDevice =
       mgpu::MergePathPartitions<mgpu::MgpuBoundsLower>(source, n, source, 0, NV, coop, comp, *exec.ctx);
     
-    KernelMerge<Tuning, true><<<numBlocks, launch.x>>>(source, n, source, 0, partitionsDevice->get(), coop, dest, comp);
+    merge_adjacent_partitions<block_size, work_per_thread><<<numBlocks, launch.x>>>(coop, source, n, partitionsDevice->get(), dest, comp);
 
     std::swap(dest, source);
   }

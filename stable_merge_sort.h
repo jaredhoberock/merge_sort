@@ -326,11 +326,11 @@ void stable_merge_sort(my_policy &exec,
   
   for(int pass = 0; pass < numPasses; ++pass)
   {
-    int coop = 2<< pass;
+    int num_blocks_per_merge = 2 << pass;
     MGPU_MEM(int) partitionsDevice =
-      mgpu::MergePathPartitions<mgpu::MgpuBoundsLower>(source, n, source, 0, NV, coop, comp, *exec.ctx);
+      mgpu::MergePathPartitions<mgpu::MgpuBoundsLower>(source, n, source, 0, NV, num_blocks_per_merge, comp, *exec.ctx);
     
-    merge_adjacent_partitions<block_size, work_per_thread><<<numBlocks, launch.x>>>(coop, source, n, partitionsDevice->get(), dest, comp);
+    merge_adjacent_partitions<block_size, work_per_thread><<<numBlocks, launch.x>>>(num_blocks_per_merge, source, n, partitionsDevice->get(), dest, comp);
 
     std::swap(dest, source);
   }

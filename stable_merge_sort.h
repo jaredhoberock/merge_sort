@@ -22,6 +22,57 @@ namespace stable_merge_sort_detail
 {
 
 
+template<unsigned int block_size, typename T>
+inline __device__
+T right_neighbor(const T &x, const T &boundary)
+{
+  using thrust::system::cuda::detail::detail::uninitialized_array;
+
+  // stage this shift to conserve smem
+  const unsigned int storage_size = block_size / 2;
+  __shared__ uninitialized_array<T,storage_size> shared;
+
+  T result = x;
+
+  unsigned int tid = threadIdx.x;
+
+  if(0 < tid && tid <= storage_size)
+  {
+    shared[tid - 1] = x;
+  }
+
+  __syncthreads();
+
+  if(tid < storage_size)
+  {
+    result = shared[tid];
+  }
+
+  __syncthreads();
+  
+  tid -= storage_size;
+  if(0 < tid && tid <= storage_size)
+  {
+    shared[tid - 1] = x;
+  }
+  else if(tid == 0)
+  {
+    shared[storage_size-1] = boundary;
+  }
+
+  __syncthreads();
+
+  if(tid < storage_size)
+  {
+    result = shared[tid];
+  }
+
+  __syncthreads();
+
+  return result;
+}
+
+
 template<int VT, typename Iterator1, typename Iterator2, typename Iterator3, typename Compare>
 __device__
 void SerialMerge(Iterator1 first1, Iterator1 last1,
@@ -59,6 +110,44 @@ namespace block
 
 template<unsigned int block_size,
          unsigned int work_per_thread,
+         typename Iterator1,
+         typename Size,
+         typename Iterator2,
+         typename Iterator3,
+         typename Compare>
+__device__ void merge(Iterator1 first1, Size n1,
+                      Iterator2 first2, Size n2,
+                      Iterator3 result,
+                      Compare comp)
+{
+  Size diag = work_per_thread * threadIdx.x;
+  Size mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first1, n1, first2, n2, diag, comp);
+
+  // compute the ranges of the sources
+  Size start1 = mp;
+  Size start2 = diag - mp;
+
+  // shuffle to find the end of the sources
+  Size end1 = right_neighbor<block_size>(start1, n1);
+  Size end2 = right_neighbor<block_size>(start2, n2);
+  
+  // each thread does a local sequential merge
+  typedef typename thrust::iterator_value<Iterator1>::type value_type;
+  value_type local_result[work_per_thread];
+  SerialMerge<work_per_thread>(first1 + start1, first1 + end1,
+                               first2 + start2, first2 + end2,
+                               local_result, comp);
+
+  __syncthreads();
+
+  // store the result
+  thrust::copy_n(thrust::seq, local_result, end1 - start1 + end2 - start2, result + work_per_thread * threadIdx.x);
+  __syncthreads();
+}
+
+
+template<unsigned int block_size,
+         unsigned int work_per_thread,
          typename Iterator,
          typename Size,
          typename Compare>
@@ -71,8 +160,8 @@ __device__ void inplace_merge(Iterator first, Size n1, Size n2, Compare comp)
 
   // compute the ranges of the sources
   Size start1 = mp;
-  Size end1 = n1;
   Size start2 = diag - mp;
+  Size end1 = n1;
   Size end2 = n2;
   
   // each thread does a local sequential merge
@@ -85,6 +174,7 @@ __device__ void inplace_merge(Iterator first, Size n1, Size n2, Compare comp)
   __syncthreads();
 
   // store the result
+  // XXX we unconditionally copy work_per_thread elements here, even if input was partially-sized
   thrust::copy_n(thrust::seq, local_result, work_per_thread, first + work_per_thread * threadIdx.x);
   __syncthreads();
 }
@@ -166,7 +256,6 @@ void staged_merge(Iterator1 first1, Size1 n1,
 {
   typedef typename thrust::iterator_value<Iterator3>::type value_type;
 
-  //__shared__ value_type s_keys[block_size * (work_per_thread + 1)];
   using thrust::system::cuda::detail::detail::uninitialized_array;
   __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
 

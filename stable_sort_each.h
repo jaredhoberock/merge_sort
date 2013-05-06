@@ -1,6 +1,7 @@
 #pragma once
 
 #include <moderngpu.cuh>
+#include "copy.h"
 
 
 template<int NT, int VT, bool HasValues, typename KeyType, typename ValType, typename Comp>
@@ -63,7 +64,8 @@ void KernelBlocksort(KeyIt1 keysSource_global,
   
   // Load keys into shared memory and transpose into register in thread order.
   KeyType threadKeys[VT];
-  mgpu::DeviceGlobalToShared<NT, VT>(count2, keysSource_global + gid, tid, shared.keys);
+  ::block::copy_n_global_to_shared<NT,VT>(keysSource_global + gid, count2, shared.keys);
+  __syncthreads();
   mgpu::DeviceSharedToThread<VT>(shared.keys, tid, threadKeys);
   
   // If we're in the last tile, set the uninitialized keys for the thread with

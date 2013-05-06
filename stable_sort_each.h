@@ -2,6 +2,8 @@
 
 #include <moderngpu.cuh>
 #include "copy.h"
+#include <thrust/copy.h>
+#include <thrust/detail/seq.h>
 
 
 template<int NT, int VT, bool HasValues, typename KeyType, typename ValType, typename Comp>
@@ -66,7 +68,7 @@ void KernelBlocksort(KeyIt1 keysSource_global,
   KeyType threadKeys[VT];
   ::block::copy_n_global_to_shared<NT,VT>(keysSource_global + gid, count2, shared.keys);
   __syncthreads();
-  mgpu::DeviceSharedToThread<VT>(shared.keys, tid, threadKeys);
+  thrust::copy_n(thrust::seq, shared.keys + tid * VT, VT, threadKeys);
   
   // If we're in the last tile, set the uninitialized keys for the thread with
   // a partial number of keys.

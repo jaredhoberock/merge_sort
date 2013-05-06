@@ -318,24 +318,25 @@ struct locate_merge_path
   __host__ __device__
   Index operator()(Index merge_path_idx)
   {
-    Size a0 = 0, b0 = 0;
-    Size gid = num_elements_per_block * merge_path_idx;
-
+    // find the index of the first CTA that will participate in the eventual merge
     Size first_block_in_partition = ~(num_blocks_per_merge - 1) & merge_path_idx;
-    Size size = num_elements_per_block * (num_blocks_per_merge >> 1);
-    thrust::tuple<Size,Size,Size> frame =
-      thrust::make_tuple(num_elements_per_block * first_block_in_partition, num_elements_per_block * first_block_in_partition + size, size);
 
-    a0 = thrust::get<0>(frame);
-    b0 = thrust::min(haystack_size, thrust::get<1>(frame));
-    Size n2 = thrust::min(haystack_size, thrust::get<1>(frame) + size) - b0;
-    Size n1 = thrust::min(haystack_size, thrust::get<0>(frame) + size) - a0;
+    // the size of each block's input
+    Size size = num_elements_per_block * (num_blocks_per_merge / 2);
+
+    // find pointers to the two input arrays
+    Size start1 = num_elements_per_block * first_block_in_partition;
+    Size start2 = thrust::min(haystack_size, start1 + size);
+
+    // the size of each input array
+    // note we clamp to the end of the total input to handle the last partial list
+    Size n1 = thrust::min<Size>(size, haystack_size - start1);
+    Size n2 = thrust::min<Size>(size, haystack_size - start2);
     
-    // Put the cross-diagonal into the coordinate system of the input
-    // lists.
-    gid -= a0;
+    // note that diag is computed as an offset from the beginning of the first list
+    Size diag = thrust::min(n1 + n2, num_elements_per_block * merge_path_idx - start1);
 
-    return mgpu::MergePath<mgpu::MgpuBoundsLower>(haystack_first + a0, n1, haystack_first + b0, n2, min(gid, n1 + n2), comp);
+    return mgpu::MergePath<mgpu::MgpuBoundsLower>(haystack_first + start1, n1, haystack_first + start2, n2, diag, comp);
   }
 };
 

@@ -6,6 +6,23 @@
 #include <thrust/detail/seq.h>
 
 
+template<int NT, int VT, typename T, typename Comp>
+__device__
+void CTABlocksortPass(T* keys_shared, int tid, int count, int coop, T* keys, int* indices, Comp comp)
+{
+  int list = ~(coop - 1) & tid;
+  int diag = min(count, VT * ((coop - 1) & tid));
+  int start = VT * list;
+  int a0 = min(count, start);
+  int b0 = min(count, start + VT * (coop / 2));
+  int b1 = min(count, start + VT * coop);
+  
+  int p = mgpu::MergePath<mgpu::MgpuBoundsLower>(keys_shared + a0, b0 - a0, keys_shared + b0, b1 - b0, diag, comp);
+  
+  mgpu::SerialMerge<VT, true>(keys_shared, a0 + p, b0, b0 + diag - p, b1, keys, indices, comp);
+}
+
+
 template<int NT, int VT, typename KeyType, typename Comp>
 __device__
 void CTABlocksortLoop(KeyType* keys_shared,
@@ -18,7 +35,7 @@ void CTABlocksortLoop(KeyType* keys_shared,
   {
     int indices[VT];
     KeyType keys[VT];
-    mgpu::CTABlocksortPass<NT, VT>(keys_shared, tid, count, coop, keys, indices, comp);
+    ::CTABlocksortPass<NT, VT>(keys_shared, tid, count, coop, keys, indices, comp);
     
     // Store results in shared memory in sorted order.
     thrust::copy_n(thrust::seq, keys, VT, keys_shared + tid * VT);

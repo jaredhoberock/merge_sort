@@ -58,6 +58,30 @@ void sequential_bounded_merge(Iterator1 first1, Iterator1 last1,
 }
 
 
+template<typename Size, typename Iterator1, typename Iterator2, typename Compare>
+__device__
+Size merge_path(Size pos, Iterator1 first1, Size n1, Iterator2 first2, Size n2, Compare comp)
+{
+  Size begin = thrust::max<Size>(Size(0), pos - n2);
+  Size end = thrust::min<Size>(pos, n1);
+  
+  while(begin < end)
+  {
+    Size mid = (begin + end) >> 1;
+
+    if(comp(first2[pos - 1 - mid], first1[mid]))
+    {
+      end = mid;
+    }
+    else
+    {
+      begin = mid + 1;
+    }
+  }
+  return begin;
+}
+
+
 namespace block
 {
 
@@ -74,7 +98,7 @@ __device__ void merge(unsigned int work_per_thread,
                       Compare comp)
 {
   Size diag = min(n1 + n2, work_per_thread * threadIdx.x);
-  Size mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first1, n1, first2, n2, diag, comp);
+  Size mp = merge_path(diag, first1, n1, first2, n2, comp);
 
   // compute the ranges of the sources
   Size start1 = mp;
@@ -82,7 +106,7 @@ __device__ void merge(unsigned int work_per_thread,
 
   Size right_diag = min(n1 + n2, diag + work_per_thread);
   // XXX we could alternatively shuffle to find the right_mp
-  Size right_mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first1, n1, first2, n2, right_diag, comp);
+  Size right_mp = merge_path(right_diag, first1, n1, first2, n2, comp);
   Size end1 = right_mp;
   Size end2 = right_diag - right_mp;
 
@@ -109,7 +133,7 @@ __device__ void bounded_inplace_merge(Iterator first, Size n1, Size n2, Compare 
   // don't ask for an out-of-bounds diagonal
   Size diag = min(n1 + n2, work_per_thread * threadIdx.x);
 
-  Size mp = mgpu::MergePath<mgpu::MgpuBoundsLower>(first, n1, first2, n2, diag, comp);
+  Size mp = merge_path(diag, first, n1, first2, n2, comp);
 
   // compute the ranges of the sources
   Size start1 = mp;
@@ -336,7 +360,7 @@ struct locate_merge_path
     // note that diag is computed as an offset from the beginning of the first list
     Size diag = thrust::min(n1 + n2, num_elements_per_block * merge_path_idx - start1);
 
-    return mgpu::MergePath<mgpu::MgpuBoundsLower>(haystack_first + start1, n1, haystack_first + start2, n2, diag, comp);
+    return merge_path(diag, haystack_first + start1, n1, haystack_first + start2, n2, comp);
   }
 };
 

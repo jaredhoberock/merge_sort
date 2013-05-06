@@ -6,11 +6,9 @@
 #include <thrust/detail/seq.h>
 
 
-template<int NT, int VT, bool HasValues, typename KeyType, typename ValType, typename Comp>
+template<int NT, int VT, typename KeyType, typename Comp>
 __device__
-void CTABlocksortLoop(ValType threadValues[VT], 
-                      KeyType* keys_shared,
-                      ValType* values_shared,
+void CTABlocksortLoop(KeyType* keys_shared,
                       int tid,
                       int count, 
                       Comp comp)
@@ -21,13 +19,6 @@ void CTABlocksortLoop(ValType threadValues[VT],
     int indices[VT];
     KeyType keys[VT];
     mgpu::CTABlocksortPass<NT, VT>(keys_shared, tid, count, coop, keys, indices, comp);
-    
-    if(HasValues) 
-    {
-      // Exchange the values through shared memory.
-      mgpu::DeviceThreadToShared<VT>(threadValues, tid, values_shared);
-      mgpu::DeviceGather<NT, VT>(NT * VT, values_shared, indices, tid, threadValues);
-    }
     
     // Store results in shared memory in sorted order.
     mgpu::DeviceThreadToShared<VT>(keys, tid, keys_shared);
@@ -56,7 +47,7 @@ void CTAMergesort(KeyType threadKeys[VT],
   __syncthreads();
   
   // Recursively merge lists until the entire CTA is sorted.
-  ::CTABlocksortLoop<NT, VT, HasValues>(threadValues, keys_shared, values_shared, tid, count, comp);
+  ::CTABlocksortLoop<NT, VT>(keys_shared, tid, count, comp);
 }
 
 

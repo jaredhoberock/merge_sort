@@ -8,6 +8,35 @@
 
 template<int NT, int VT, bool HasValues, typename KeyType, typename ValType, typename Comp>
 __device__
+void CTABlocksortLoop(ValType threadValues[VT], 
+                      KeyType* keys_shared,
+                      ValType* values_shared,
+                      int tid,
+                      int count, 
+                      Comp comp)
+{
+  #pragma unroll
+  for(int coop = 2; coop <= NT; coop *= 2)
+  {
+    int indices[VT];
+    KeyType keys[VT];
+    mgpu::CTABlocksortPass<NT, VT>(keys_shared, tid, count, coop, keys, indices, comp);
+    
+    if(HasValues) 
+    {
+      // Exchange the values through shared memory.
+      mgpu::DeviceThreadToShared<VT>(threadValues, tid, values_shared);
+      mgpu::DeviceGather<NT, VT>(NT * VT, values_shared, indices, tid, threadValues);
+    }
+    
+    // Store results in shared memory in sorted order.
+    mgpu::DeviceThreadToShared<VT>(keys, tid, keys_shared);
+  }
+}
+
+
+template<int NT, int VT, bool HasValues, typename KeyType, typename ValType, typename Comp>
+__device__
 void CTAMergesort(KeyType threadKeys[VT],
                   ValType threadValues[VT],
                   KeyType* keys_shared,
@@ -27,7 +56,7 @@ void CTAMergesort(KeyType threadKeys[VT],
   __syncthreads();
   
   // Recursively merge lists until the entire CTA is sorted.
-  mgpu::CTABlocksortLoop<NT, VT, HasValues>(threadValues, keys_shared, values_shared, tid, count, comp);
+  ::CTABlocksortLoop<NT, VT, HasValues>(threadValues, keys_shared, values_shared, tid, count, comp);
 }
 
 

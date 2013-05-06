@@ -8,7 +8,13 @@
 
 template<int NT, int VT, bool HasValues, typename KeyType, typename ValType, typename Comp>
 __device__
-void CTAMergesort(KeyType threadKeys[VT], ValType threadValues[VT], KeyType* keys_shared, ValType* values_shared, int count, int tid, Comp comp)
+void CTAMergesort(KeyType threadKeys[VT],
+                  ValType threadValues[VT],
+                  KeyType* keys_shared,
+                  ValType* values_shared,
+                  int count,
+                  int tid, 
+                  Comp comp)
 {
   // Stable sort the keys in the thread.
   if(VT * tid < count)
@@ -17,7 +23,8 @@ void CTAMergesort(KeyType threadKeys[VT], ValType threadValues[VT], KeyType* key
   }
   
   // Store the locally sorted keys into shared memory.
-  mgpu::DeviceThreadToShared<VT>(threadKeys, tid, keys_shared);
+  thrust::copy_n(thrust::seq, threadKeys, VT, keys_shared + tid * VT);
+  __syncthreads();
   
   // Recursively merge lists until the entire CTA is sorted.
   mgpu::CTABlocksortLoop<NT, VT, HasValues>(threadValues, keys_shared, values_shared, tid, count, comp);
@@ -73,17 +80,18 @@ void KernelBlocksort(KeyIt1 keysSource_global,
   // If we're in the last tile, set the uninitialized keys for the thread with
   // a partial number of keys.
   int first = VT * tid;
-  if(first + VT > count2 && first < count2) {
-  	KeyType maxKey = threadKeys[0];
-  	#pragma unroll
-  	for(int i = 1; i < VT; ++i)
-  		if(first + i < count2)
-  			maxKey = comp(maxKey, threadKeys[i]) ? threadKeys[i] : maxKey;
-  
-  	// Fill in the uninitialized elements with max key.
-  	#pragma unroll
-  	for(int i = 0; i < VT; ++i)
-  		if(first + i >= count2) threadKeys[i] = maxKey;
+  if(first + VT > count2 && first < count2)
+  {
+    KeyType maxKey = threadKeys[0];
+    #pragma unroll
+    for(int i = 1; i < VT; ++i)
+    	if(first + i < count2)
+    		maxKey = comp(maxKey, threadKeys[i]) ? threadKeys[i] : maxKey;
+    
+    // Fill in the uninitialized elements with max key.
+    #pragma unroll
+    for(int i = 0; i < VT; ++i)
+    	if(first + i >= count2) threadKeys[i] = maxKey;
   }
   
   ::CTAMergesort<NT, VT, HasValues>(threadKeys, threadValues, shared.keys, shared.values, count2, tid, comp);

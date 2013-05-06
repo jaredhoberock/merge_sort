@@ -21,7 +21,8 @@ void CTABlocksortLoop(KeyType* keys_shared,
     mgpu::CTABlocksortPass<NT, VT>(keys_shared, tid, count, coop, keys, indices, comp);
     
     // Store results in shared memory in sorted order.
-    mgpu::DeviceThreadToShared<VT>(keys, tid, keys_shared);
+    thrust::copy_n(thrust::seq, keys, VT, keys_shared + tid * VT);
+    __syncthreads();
   }
 }
 

@@ -18,7 +18,7 @@ void copy_n(Iterator1 first, Size n, Iterator2 result)
 
 template<unsigned int block_size, unsigned int work_per_thread, typename Iterator1, typename Size, typename Iterator2>
 __device__
-void copy_n_fast(Iterator1 first, Size n, Iterator2 result)
+void copy_n_global_to_shared(Iterator1 first, Size n, Iterator2 result)
 {
   typedef typename thrust::iterator_value<Iterator1>::type value_type;
 

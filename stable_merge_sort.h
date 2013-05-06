@@ -184,9 +184,9 @@ void staged_bounded_merge(Iterator1 first1, Size1 n1,
   __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
 
   // stage the input through shared memory.
-  // XXX replacing copy_n_fast with copy_n results in a 10% performance hit
-  ::block::copy_n_fast<block_size, work_per_thread>(first1, n1, s_keys.begin());
-  ::block::copy_n_fast<block_size, work_per_thread>(first2, n2, s_keys.begin() + n1);
+  // XXX replacing copy_n_global_to_shared with copy_n results in a 10% performance hit
+  ::block::copy_n_global_to_shared<block_size, work_per_thread>(first1, n1, s_keys.begin());
+  ::block::copy_n_global_to_shared<block_size, work_per_thread>(first2, n2, s_keys.begin() + n1);
   __syncthreads();
 
   // cooperatively merge in place

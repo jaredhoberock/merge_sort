@@ -1,3 +1,5 @@
+#pragma once
+
 #include <iostream>
 #include <moderngpu.cuh>
 #include <util/mgpucontext.h>
@@ -11,6 +13,9 @@
 #include <thrust/tabulate.h>
 #include <thrust/detail/minmax.h>
 #include <thrust/detail/function.h>
+#include <thrust/system/cuda/detail/detail/stable_sort_by_count.h>
+#include <thrust/iterator/discard_iterator.h>
+#include "stable_sort_each.h"
 
 
 struct my_policy
@@ -400,9 +405,7 @@ void stable_merge_sort(my_policy &exec,
   T* source = thrust::raw_pointer_cast(&*first);
   T* dest = destDevice->get();
   
-  mgpu::KernelBlocksort<Tuning, false>
-    <<<numBlocks, launch.x, 0>>>(source, (const int*)0,
-    n, (1 & numPasses) ? dest : source, (int*)0, comp);
+  stable_sort_each_copy<block_size, work_per_thread>(source, source + n, (1 & numPasses) ? dest : source, comp);
   if(1 & numPasses) std::swap(source, dest);
 
   MGPU_MEM(int) merge_paths = exec.ctx->Malloc<T>(numBlocks + 1);

@@ -91,11 +91,6 @@ void KernelBlocksort(KeyIt1 keysSource_global,
   // Store the sorted keys to global.
   ::block::copy_n<block_size>(shared.keys, count2, keysDest_global + gid);
   __syncthreads();
-  
-//  if(HasValues) {
-//    mgpu::DeviceThreadToShared<VT>(threadValues, tid, shared.values);
-//    mgpu::DeviceSharedToGlobal<NT, VT>(count2, shared.values, tid, valsDest_global + gid);
-//  }
 }
 
 

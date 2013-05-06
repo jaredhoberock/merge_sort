@@ -8,6 +8,8 @@
 #include <thrust/system/cuda/detail/detail/uninitialized.h>
 #include <thrust/merge.h>
 #include <thrust/tuple.h>
+#include <thrust/tabulate.h>
+#include <thrust/detail/minmax.h>
 
 
 struct my_policy
@@ -20,7 +22,7 @@ struct my_policy
 };
 
 
-namespace stable_merge_sort_detail
+namespace stable_merge_sort_detail2
 {
 
 
@@ -232,7 +234,7 @@ void staged_bounded_merge(Iterator1 first1, Size1 n1,
 
 // Returns (start1, end1, start2, end2) into mergesort input lists between mp0 and mp1.
 __host__ __device__
-thrust::tuple<int,int,int,int> find_mergesort_interval(int3 frame, int num_blocks_per_partition, int block_idx, int num_elements_per_block, int n, int mp, int right_mp)
+thrust::tuple<int,int,int,int> find_mergesort_interval(int3 frame, int num_blocks_per_merge, int block_idx, int num_elements_per_block, int n, int mp, int right_mp)
 {
   // Locate diag from the start of the A sublist.
   int diag = num_elements_per_block * block_idx - frame.x;
@@ -246,7 +248,7 @@ thrust::tuple<int,int,int,int> find_mergesort_interval(int3 frame, int num_block
   // the same partition but in the wrong coordinate system, so its 0 when it
   // should be listSize. Correct that by checking if this is the last block
   // in this merge operation.
-  if(num_blocks_per_partition - 1 == ((num_blocks_per_partition - 1) & block_idx))
+  if(num_blocks_per_merge - 1 == ((num_blocks_per_merge - 1) & block_idx))
   {
     end1 = min(n, frame.x + frame.z);
     end2 = min(n, frame.y + frame.z);
@@ -295,6 +297,58 @@ void merge_adjacent_partitions(Size num_blocks_per_merge,
 }
 
 
+template<typename Iterator, typename Size, typename Compare>
+struct locate_merge_path
+{
+  Iterator haystack_first;
+  Size haystack_size;
+  Size num_elements_per_block;
+  Size num_blocks_per_merge;
+  Compare comp;
+
+  locate_merge_path(Iterator haystack_first, Size haystack_size, Size num_elements_per_block, Size num_blocks_per_merge, Compare comp)
+    : haystack_first(haystack_first),
+      haystack_size(haystack_size),
+      num_elements_per_block(num_elements_per_block),
+      num_blocks_per_merge(num_blocks_per_merge),
+      comp(comp)
+  {}
+
+  template<typename Index>
+  __host__ __device__
+  Index operator()(Index merge_path_idx)
+  {
+    Size a0 = 0, b0 = 0;
+    Size gid = num_elements_per_block * merge_path_idx;
+
+    Size first_block_in_partition = ~(num_blocks_per_merge - 1) & merge_path_idx;
+    Size size = num_elements_per_block * (num_blocks_per_merge >> 1);
+    thrust::tuple<Size,Size,Size> frame =
+      thrust::make_tuple(num_elements_per_block * first_block_in_partition, num_elements_per_block * first_block_in_partition + size, size);
+
+    a0 = thrust::get<0>(frame);
+    b0 = thrust::min(haystack_size, thrust::get<1>(frame));
+    Size n2 = thrust::min(haystack_size, thrust::get<1>(frame) + size) - b0;
+    Size n1 = thrust::min(haystack_size, thrust::get<0>(frame) + size) - a0;
+    
+    // Put the cross-diagonal into the coordinate system of the input
+    // lists.
+    gid -= a0;
+
+    return mgpu::MergePath<mgpu::MgpuBoundsLower>(haystack_first + a0, n1, haystack_first + b0, n2, min(gid, n1 + n2), comp);
+  }
+};
+
+
+template<typename Iterator1, typename Size, typename Iterator2, typename Compare>
+void locate_merge_paths(Iterator1 result, Size n, Iterator2 haystack_first, Size haystack_size, Size num_elements_per_block, Size num_blocks_per_merge, Compare comp)
+{
+  locate_merge_path<Iterator2,Size,Compare> f(haystack_first, haystack_size, num_elements_per_block, num_blocks_per_merge, comp);
+
+  thrust::tabulate(thrust::cuda::par, result, result + n, f);
+}
+
+
 template<typename RandomAccessIterator, typename Compare>
 void stable_merge_sort(my_policy &exec,
                        RandomAccessIterator first,
@@ -311,8 +365,9 @@ void stable_merge_sort(my_policy &exec,
   typedef mgpu::LaunchBoxVT<block_size, work_per_thread> Tuning;
   int2 launch = Tuning::GetLaunchParams(*exec.ctx);
   
-  const int NV = launch.x * launch.y;
-  int numBlocks = MGPU_DIV_UP(n, NV);
+  const int work_per_block = block_size * work_per_thread;
+
+  int numBlocks = MGPU_DIV_UP(n, work_per_block);
   int numPasses = mgpu::FindLog2(numBlocks, true);
   
   MGPU_MEM(T) destDevice = exec.ctx->Malloc<T>(n);
@@ -323,21 +378,22 @@ void stable_merge_sort(my_policy &exec,
     <<<numBlocks, launch.x, 0>>>(source, (const int*)0,
     n, (1 & numPasses) ? dest : source, (int*)0, comp);
   if(1 & numPasses) std::swap(source, dest);
+
+  MGPU_MEM(int) merge_paths = exec.ctx->Malloc<T>(numBlocks + 1);
   
   for(int pass = 0; pass < numPasses; ++pass)
   {
     int num_blocks_per_merge = 2 << pass;
-    MGPU_MEM(int) partitionsDevice =
-      mgpu::MergePathPartitions<mgpu::MgpuBoundsLower>(source, n, source, 0, NV, num_blocks_per_merge, comp, *exec.ctx);
+    locate_merge_paths(merge_paths->get(), numBlocks + 1, source, n, work_per_block, num_blocks_per_merge, comp);
     
-    merge_adjacent_partitions<block_size, work_per_thread><<<numBlocks, launch.x>>>(num_blocks_per_merge, source, n, partitionsDevice->get(), dest, comp);
+    merge_adjacent_partitions<block_size, work_per_thread><<<numBlocks, launch.x>>>(num_blocks_per_merge, source, n, merge_paths->get(), dest, comp);
 
     std::swap(dest, source);
   }
 }
 
 
-} // end stable_merge_sort_detail
+} // end stable_merge_sort_detail2
 
 
 template<typename RandomAccessIterator, typename Compare>
@@ -346,6 +402,6 @@ void stable_merge_sort(my_policy &exec,
                        RandomAccessIterator last,
                        Compare comp)
 {
-  stable_merge_sort_detail::stable_merge_sort(exec, first, last, comp);
+  stable_merge_sort_detail2::stable_merge_sort(exec, first, last, comp);
 }
 

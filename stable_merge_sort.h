@@ -16,6 +16,7 @@
 #include <thrust/system/cuda/detail/detail/stable_sort_by_count.h>
 #include <thrust/iterator/discard_iterator.h>
 #include "stable_sort_each.h"
+#include "copy.h"
 
 
 struct my_policy
@@ -164,68 +165,6 @@ __device__ void bounded_inplace_merge(Iterator first, Size n1, Size n2, Compare 
 }
 
 
-template<unsigned int block_size, typename Iterator1, typename Size, typename Iterator2>
-__device__
-void copy_n(Iterator1 first, Size n, Iterator2 result)
-{
-  for(Size i = threadIdx.x; i < n; i += block_size)
-  {
-    result[i] = first[i];
-  }
-}
-
-
-template<unsigned int block_size, unsigned int work_per_thread, typename Iterator1, typename Size, typename Iterator2>
-__device__
-void copy_n_fast(Iterator1 first, Size n, Iterator2 result)
-{
-  typedef typename thrust::iterator_value<Iterator1>::type value_type;
-
-  // stage copy through registers
-  value_type reg[work_per_thread];
-
-  // avoid conditional accesses when possible
-  if(n >= block_size * work_per_thread)
-  {
-    for(unsigned int i = 0; i < work_per_thread; ++i)
-    {
-      unsigned int idx = block_size * i + threadIdx.x;
-
-      reg[i] = first[idx];
-    }
-  }
-  else
-  {
-    for(unsigned int i = 0; i < work_per_thread; ++i)
-    {
-      unsigned int idx = block_size * i + threadIdx.x;
-
-      if(idx < n) reg[i] = first[idx];
-    }
-  }
-
-  // avoid conditional accesses when possible
-  if(n >= block_size * work_per_thread)
-  {
-    for(unsigned int i = 0; i < work_per_thread; ++i)
-    {
-      unsigned int idx = block_size * i + threadIdx.x;
-
-      result[idx] = reg[i];
-    }
-  }
-  else
-  {
-    for(unsigned int i = 0; i < work_per_thread; ++i)
-    {
-      unsigned int idx = block_size * i + threadIdx.x;
-
-      if(idx < n) result[idx] = reg[i];
-    }
-  }
-}
-
-
 // staged, block-wise merge for when we have a static bound on the size of the result (block_size * work_per_thread)
 template<unsigned int block_size,
          unsigned int work_per_thread,
@@ -246,15 +185,15 @@ void staged_bounded_merge(Iterator1 first1, Size1 n1,
 
   // stage the input through shared memory.
   // XXX replacing copy_n_fast with copy_n results in a 10% performance hit
-  block::copy_n_fast<block_size, work_per_thread>(first1, n1, s_keys.begin());
-  block::copy_n_fast<block_size, work_per_thread>(first2, n2, s_keys.begin() + n1);
+  ::block::copy_n_fast<block_size, work_per_thread>(first1, n1, s_keys.begin());
+  ::block::copy_n_fast<block_size, work_per_thread>(first2, n2, s_keys.begin() + n1);
   __syncthreads();
 
   // cooperatively merge in place
   block::bounded_inplace_merge<block_size, work_per_thread>(s_keys.begin(), n1, n2, comp);
   
   // store result in smem to result
-  block::copy_n<block_size>(s_keys.begin(), n1 + n2, result);
+  ::block::copy_n<block_size>(s_keys.begin(), n1 + n2, result);
   __syncthreads();
 }
 

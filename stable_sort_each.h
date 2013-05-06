@@ -2,6 +2,25 @@
 
 #include <moderngpu.cuh>
 
+
+template<int NT, int VT, bool HasValues, typename KeyType, typename ValType, typename Comp>
+__device__
+void CTAMergesort(KeyType threadKeys[VT], ValType threadValues[VT], KeyType* keys_shared, ValType* values_shared, int count, int tid, Comp comp)
+{
+  // Stable sort the keys in the thread.
+  if(VT * tid < count)
+  {
+    mgpu::OddEvenTransposeSort<VT>(threadKeys, threadValues, comp);
+  }
+  
+  // Store the locally sorted keys into shared memory.
+  mgpu::DeviceThreadToShared<VT>(threadKeys, tid, keys_shared);
+  
+  // Recursively merge lists until the entire CTA is sorted.
+  mgpu::CTABlocksortLoop<NT, VT, HasValues>(threadValues, keys_shared, values_shared, tid, count, comp);
+}
+
+
 template<unsigned int block_size,
          unsigned int work_per_thread,
          bool HasValues,
@@ -63,15 +82,15 @@ void KernelBlocksort(KeyIt1 keysSource_global,
   		if(first + i >= count2) threadKeys[i] = maxKey;
   }
   
-  mgpu::CTAMergesort<NT, VT, HasValues>(threadKeys, threadValues, shared.keys, shared.values, count2, tid, comp);
+  ::CTAMergesort<NT, VT, HasValues>(threadKeys, threadValues, shared.keys, shared.values, count2, tid, comp);
   
   // Store the sorted keys to global.
   mgpu::DeviceSharedToGlobal<NT, VT>(count2, shared.keys, tid, keysDest_global + gid);
   
-  if(HasValues) {
-    mgpu::DeviceThreadToShared<VT>(threadValues, tid, shared.values);
-    mgpu::DeviceSharedToGlobal<NT, VT>(count2, shared.values, tid, valsDest_global + gid);
-  }
+//  if(HasValues) {
+//    mgpu::DeviceThreadToShared<VT>(threadValues, tid, shared.values);
+//    mgpu::DeviceSharedToGlobal<NT, VT>(count2, shared.values, tid, valsDest_global + gid);
+//  }
 }
 
 

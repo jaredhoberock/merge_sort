@@ -10,6 +10,7 @@
 #include <thrust/tuple.h>
 #include <thrust/tabulate.h>
 #include <thrust/detail/minmax.h>
+#include <thrust/detail/function.h>
 
 
 struct my_policy
@@ -328,7 +329,7 @@ struct locate_merge_path
   Size haystack_size;
   Size num_elements_per_block;
   Size num_blocks_per_merge;
-  Compare comp;
+  thrust::detail::wrapped_function<Compare,bool> comp;
 
   locate_merge_path(Iterator haystack_first, Size haystack_size, Size num_elements_per_block, Size num_blocks_per_merge, Compare comp)
     : haystack_first(haystack_first),

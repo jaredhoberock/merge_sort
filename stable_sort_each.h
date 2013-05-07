@@ -6,7 +6,54 @@
 #include <thrust/copy.h>
 #include <thrust/detail/seq.h>
 #include <thrust/detail/minmax.h>
+#include <thrust/detail/swap.h>
 
+
+namespace static_stable_odd_even_transpose_sort_detail
+{
+
+
+template<int i, int n>
+struct impl
+{
+  template<typename Iterator, typename Compare>
+  static __device__
+  void do_it(Iterator keys, Compare comp)
+  {
+    #pragma unroll
+    for(int j = 1 & i; j < n - 1; j += 2)
+    {
+      if(comp(keys[j + 1], keys[j]))
+      {
+        using thrust::swap;
+
+      	swap(keys[j], keys[j + 1]);
+      }
+    }
+
+    impl<i + 1, n>::do_it(keys, comp);
+  }
+};
+
+
+template<int i>
+struct impl<i,i>
+{
+  template<typename Iterator, typename Compare>
+  static __device__
+  void do_it(Iterator, Compare) {}
+};
+
+
+} // end static_stable_odd_even_transpose_sort_detail
+
+
+template<int n, typename RandomAccessIterator, typename Compare>
+__device__
+void static_stable_sort(RandomAccessIterator keys, Compare comp)
+{
+  static_stable_odd_even_transpose_sort_detail::impl<0,n>::do_it(keys, comp);
+}
 
 namespace block
 {
@@ -76,7 +123,7 @@ void CTAMergesort(KeyType threadKeys[VT],
   // Stable sort the keys in the thread.
   if(VT * tid < count)
   {
-    mgpu::OddEvenTransposeSort<VT>(threadKeys, threadValues, comp);
+    static_stable_sort<VT>(threadKeys, comp);
   }
   
   // Store the locally sorted keys into shared memory.

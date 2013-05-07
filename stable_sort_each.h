@@ -55,6 +55,23 @@ void static_stable_sort(RandomAccessIterator keys, Compare comp)
   static_stable_odd_even_transpose_sort_detail::impl<0,n>::do_it(keys, comp);
 }
 
+
+// sequential copy_n for when we have a static bound on the value of n
+template<unsigned int bound_n, typename RandomAccessIterator1, typename Size, typename RandomAccessIterator2>
+__device__
+void bounded_copy_n(RandomAccessIterator1 first, Size n, RandomAccessIterator2 result)
+{
+  #pragma unroll
+  for(unsigned int i = 0; i < bound_n; ++i)
+  {
+    if(i < n)
+    {
+      result[i] = first[i];
+    }
+  }
+}
+
+
 namespace block
 {
 
@@ -99,8 +116,11 @@ void bounded_inplace_merge_adjacent_partitions(Iterator first,
 
     __syncthreads();
 
+    // compute the size of the local result to account for the final, partial tile
+    Size local_result_size = min(work_per_thread, n - (threadIdx.x * work_per_thread));
+
     // store local results
-    thrust::copy_n(thrust::seq, local_result, work_per_thread, first + threadIdx.x * work_per_thread);
+    bounded_copy_n<work_per_thread>(local_result, local_result_size, first + threadIdx.x * work_per_thread);
 
     __syncthreads();
   }
@@ -115,20 +135,26 @@ void bounded_stable_sort(RandomAccessIterator first,
 {
   typedef typename thrust::iterator_value<RandomAccessIterator>::type value_type;
 
+  // compute the size of this thread's local tile to account for the final, partial tile
+  Size local_tile_size = work_per_thread;
+  if(work_per_thread * (threadIdx.x + 1) > n)
+  {
+    local_tile_size = max(0, n - (work_per_thread * threadIdx.x));
+  }
+
   // each thread creates a local copy of its partition of the array
   value_type local_keys[work_per_thread];
-  thrust::copy_n(thrust::seq, first + threadIdx.x * work_per_thread, work_per_thread, local_keys);
+  bounded_copy_n<work_per_thread>(first + threadIdx.x * work_per_thread, local_tile_size, local_keys);
   
   // if we're in the final partial tile, fill the remainder of the local_keys with with the max value
-  unsigned int local_first = work_per_thread * threadIdx.x;
-  if(local_first + work_per_thread > n && local_first < n)
+  if(local_tile_size < work_per_thread)
   {
     value_type max_key = local_keys[0];
 
     #pragma unroll
     for(unsigned int i = 1; i < work_per_thread; ++i)
     {
-      if(local_first + i < n)
+      if(i < local_tile_size)
       {
         max_key = comp(max_key, local_keys[i]) ? local_keys[i] : max_key;
       }
@@ -138,7 +164,7 @@ void bounded_stable_sort(RandomAccessIterator first,
     #pragma unroll
     for(unsigned int i = 0; i < work_per_thread; ++i)
     {
-      if(local_first + i >= n)
+      if(i >= local_tile_size)
       {
         local_keys[i] = max_key;
       }
@@ -152,7 +178,7 @@ void bounded_stable_sort(RandomAccessIterator first,
   }
   
   // Store the locally sorted keys into shared memory.
-  thrust::copy_n(thrust::seq, local_keys, work_per_thread, first + threadIdx.x * work_per_thread);
+  bounded_copy_n<work_per_thread>(local_keys, local_tile_size, first + threadIdx.x * work_per_thread);
   __syncthreads();
 
   block::bounded_inplace_merge_adjacent_partitions<block_size,work_per_thread>(first, n, comp);

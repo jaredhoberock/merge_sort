@@ -1,12 +1,12 @@
 #pragma once
 
-#include <moderngpu.cuh>
 #include "copy.h"
 #include "merge.h"
 #include <thrust/copy.h>
 #include <thrust/detail/seq.h>
 #include <thrust/detail/minmax.h>
 #include <thrust/detail/swap.h>
+#include <thrust/detail/util/blocking.h>
 
 
 namespace static_stable_odd_even_transpose_sort_detail
@@ -190,39 +190,34 @@ void bounded_stable_sort(RandomAccessIterator first,
 
 template<unsigned int block_size,
          unsigned int work_per_thread,
-         bool HasValues,
-         typename KeyIt1,
-         typename KeyIt2, 
-         typename ValIt1,
-         typename ValIt2,
-         typename Comp>
+         typename RandomAccessIterator1,
+         typename Size,
+         typename RandomAccessIterator2, 
+         typename Compare>
 __global__
-void KernelBlocksort(KeyIt1 keysSource_global,
-                     ValIt1 valsSource_global,
-                     int count,
-                     KeyIt2 keysDest_global, 
-                     ValIt2 valsDest_global,
-                     Comp comp)
+void stable_sort_each_copy_kernel(RandomAccessIterator1 first,
+                                  Size n,
+                                  RandomAccessIterator2 result,
+                                  Compare comp)
 {
-  typedef typename std::iterator_traits<KeyIt1>::value_type KeyType;
-  typedef typename std::iterator_traits<ValIt1>::value_type ValType;
+  typedef typename thrust::iterator_value<RandomAccessIterator1>::type value_type;
 
   unsigned int work_per_block = block_size * work_per_thread;
   unsigned int offset = work_per_block * blockIdx.x;
-  unsigned int tile_size = min(work_per_block, count - offset);
+  unsigned int tile_size = min(work_per_block, n - offset);
 
   // stage this operation through smem
-  __shared__ KeyType s_keys[block_size * (work_per_thread + 1)];
+  __shared__ value_type s_keys[block_size * (work_per_thread + 1)];
   
   // load input tile into smem
-  ::block::copy_n_global_to_shared<block_size,work_per_thread>(keysSource_global + offset, tile_size, s_keys);
+  ::block::copy_n_global_to_shared<block_size,work_per_thread>(first + offset, tile_size, s_keys);
   __syncthreads();
 
   // sort input in smem
   ::block::bounded_stable_sort<block_size,work_per_thread>(s_keys, tile_size, comp);
   
   // store result to gmem
-  ::block::copy_n<block_size>(s_keys, tile_size, keysDest_global + offset);
+  ::block::copy_n<block_size>(s_keys, tile_size, result + offset);
   __syncthreads();
 }
 
@@ -237,7 +232,7 @@ void stable_sort_each_copy(RandomAccessIterator1 first, RandomAccessIterator1 la
                            Compare comp)
 {
   typename thrust::iterator_difference<RandomAccessIterator1>::type n = last - first;
-  int num_blocks = MGPU_DIV_UP(n, block_size * work_per_thread);
-  KernelBlocksort<block_size, work_per_thread, false><<<num_blocks, block_size>>>(first, (int*)0, n, result, (int*)0, comp);
+  int num_blocks = thrust::detail::util::divide_ri(n, block_size * work_per_thread);
+  stable_sort_each_copy_kernel<block_size, work_per_thread><<<num_blocks, block_size>>>(first, n, result, comp);
 }
 

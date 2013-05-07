@@ -18,10 +18,10 @@ void CTABlocksortPass(T* keys_shared, int tid, int count, int coop, T* keys, Com
   int b0 = min(count, start + VT * (coop / 2));
   int b1 = min(count, start + VT * coop);
   
-  int p = mgpu::MergePath<mgpu::MgpuBoundsLower>(keys_shared + a0, b0 - a0, keys_shared + b0, b1 - b0, diag, comp);
+  int mp = merge_path(diag, keys_shared + a0, b0 - a0, keys_shared + b0, b1 - b0, comp);
   
-  sequential_bounded_merge<VT>(keys_shared + a0 + p,        keys_shared + b0,
-                               keys_shared + b0 + diag - p, keys_shared + b1,
+  sequential_bounded_merge<VT>(keys_shared + a0 + mp,        keys_shared + b0,
+                               keys_shared + b0 + diag - mp, keys_shared + b1,
                                keys,
                                comp);
   __syncthreads();

@@ -34,3 +34,27 @@ void sequential_bounded_merge(Iterator1 first1, Iterator1 last1,
   }
 }
 
+
+template<typename Size, typename Iterator1, typename Iterator2, typename Compare>
+__device__
+Size merge_path(Size pos, Iterator1 first1, Size n1, Iterator2 first2, Size n2, Compare comp)
+{
+  Size begin = thrust::max<Size>(Size(0), pos - n2);
+  Size end = thrust::min<Size>(pos, n1);
+  
+  while(begin < end)
+  {
+    Size mid = (begin + end) >> 1;
+
+    if(comp(first2[pos - 1 - mid], first1[mid]))
+    {
+      end = mid;
+    }
+    else
+    {
+      begin = mid + 1;
+    }
+  }
+  return begin;
+}
+

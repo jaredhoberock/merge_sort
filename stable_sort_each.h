@@ -6,6 +6,32 @@
 #include <thrust/detail/seq.h>
 
 
+template<int VT, bool RangeCheck, typename T, typename Comp>
+__device__
+void SerialMerge(const T* keys_shared, int aBegin, int aEnd, int bBegin, int bEnd, T* results, int* indices, Comp comp)
+{ 
+  T aKey = keys_shared[aBegin];
+  T bKey = keys_shared[bBegin];
+  
+  #pragma unroll
+  for(int i = 0; i < VT; ++i)
+  {
+    bool p;
+    if(RangeCheck) 
+    	p = (bBegin >= bEnd) || ((aBegin < aEnd) && !comp(bKey, aKey));
+    else
+    	p = !comp(bKey, aKey);
+    
+    results[i] = p ? aKey : bKey;
+    indices[i] = p ? aBegin : bBegin;
+    
+    if(p) aKey = keys_shared[++aBegin];
+    else bKey = keys_shared[++bBegin];
+  }
+  __syncthreads();
+}
+
+
 template<int NT, int VT, typename T, typename Comp>
 __device__
 void CTABlocksortPass(T* keys_shared, int tid, int count, int coop, T* keys, int* indices, Comp comp)
@@ -19,7 +45,7 @@ void CTABlocksortPass(T* keys_shared, int tid, int count, int coop, T* keys, int
   
   int p = mgpu::MergePath<mgpu::MgpuBoundsLower>(keys_shared + a0, b0 - a0, keys_shared + b0, b1 - b0, diag, comp);
   
-  mgpu::SerialMerge<VT, true>(keys_shared, a0 + p, b0, b0 + diag - p, b1, keys, indices, comp);
+  ::SerialMerge<VT, true>(keys_shared, a0 + p, b0, b0 + diag - p, b1, keys, indices, comp);
 }
 
 

@@ -8,6 +8,8 @@
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>
 #include <thrust/system/cuda/detail/detail/uninitialized.h>
+#include <thrust/system/cuda/detail/detail/launch_closure.h>
+#include <thrust/detail/util/blocking.h>
 #include <thrust/merge.h>
 #include <thrust/tuple.h>
 #include <thrust/tabulate.h>
@@ -129,7 +131,6 @@ void staged_bounded_merge(Iterator1 first1, Size1 n1,
   __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
 
   // stage the input through shared memory.
-  // XXX replacing copy_n_global_to_shared with copy_n results in a 10% performance hit
   ::block::async_copy_n_global_to_shared<block_size, work_per_thread>(first1, n1, s_keys.begin());
   ::block::async_copy_n_global_to_shared<block_size, work_per_thread>(first2, n2, s_keys.begin() + n1);
   __syncthreads();
@@ -189,24 +190,70 @@ template<unsigned int block_size,
          typename Iterator2,
          typename Iterator3,
          typename Compare>
-__global__
-void merge_adjacent_partitions(Size num_blocks_per_merge,
-                               Iterator1 first, Size n,
-                               Iterator2 merge_paths,
-                               Iterator3 result,
-                               Compare comp)
+struct merge_adjacent_partitions_closure
 {
-  const int work_per_block = block_size * work_per_thread;
-  
-  int start1 = 0, end1 = 0, start2 = 0, end2 = 0;
+  typedef thrust::system::cuda::detail::detail::statically_blocked_thread_array<block_size> context_type;
 
-  thrust::tie(start1,end1,start2,end2) =
-    locate_merge_partitions(n, blockIdx.x, num_blocks_per_merge, work_per_block, merge_paths[blockIdx.x], merge_paths[blockIdx.x + 1]);
-  
-  block::staged_bounded_merge<block_size, work_per_thread>(first + start1, end1 - start1,
-                                                           first + start2, end2 - start2,
-                                                           result + blockIdx.x * work_per_block,
-                                                           comp);
+  Size num_blocks_per_merge;
+  Iterator1 first;
+  Size n;
+  Iterator2 merge_paths;
+  Iterator3 result;
+  thrust::detail::wrapped_function<Compare,bool> comp;
+
+
+  merge_adjacent_partitions_closure(Size num_blocks_per_merge, Iterator1 first, Size n, Iterator2 merge_paths, Iterator3 result, Compare comp)
+    : num_blocks_per_merge(num_blocks_per_merge),
+      first(first),
+      n(n),
+      merge_paths(merge_paths),
+      result(result),
+      comp(comp)
+  {}
+
+
+  __thrust_forceinline__ __device__
+  void operator()()
+  {
+    unsigned int work_per_block = block_size * work_per_thread;
+    
+    Size start1 = 0, end1 = 0, start2 = 0, end2 = 0;
+
+    thrust::tie(start1,end1,start2,end2) =
+      locate_merge_partitions(n, blockIdx.x, num_blocks_per_merge, work_per_block, merge_paths[blockIdx.x], merge_paths[blockIdx.x + 1]);
+    
+    block::staged_bounded_merge<block_size, work_per_thread>(first + start1, end1 - start1,
+                                                             first + start2, end2 - start2,
+                                                             result + blockIdx.x * work_per_block,
+                                                             comp);
+  }
+};
+
+
+template<unsigned int block_size,
+         unsigned int work_per_thread,
+         typename Size,
+         typename Iterator1,
+         typename Iterator2,
+         typename Iterator3,
+         typename Compare>
+void merge_adjacent_partitions(Size num_blocks_per_merge, Iterator1 first, Size n, Iterator2 merge_paths, Iterator3 result, Compare comp)
+{
+  typedef merge_adjacent_partitions_closure<
+    block_size,
+    work_per_thread,
+    Size,
+    Iterator1,
+    Iterator2,
+    Iterator3,
+    Compare
+  > closure_type;
+
+  closure_type closure(num_blocks_per_merge, first, n, merge_paths, result, comp);
+
+  unsigned int num_blocks = thrust::detail::util::divide_ri(n, block_size * work_per_thread);
+
+  thrust::system::cuda::detail::detail::launch_closure(closure, num_blocks, block_size);
 }
 
 
@@ -281,7 +328,7 @@ void stable_merge_sort(my_policy &exec,
   
   const int work_per_block = block_size * work_per_thread;
 
-  int numBlocks = MGPU_DIV_UP(n, work_per_block);
+  int numBlocks = thrust::detail::util::divide_ri(n, work_per_block);
   int numPasses = mgpu::FindLog2(numBlocks, true);
   
   MGPU_MEM(T) destDevice = exec.ctx->Malloc<T>(n);
@@ -296,9 +343,10 @@ void stable_merge_sort(my_policy &exec,
   for(int pass = 0; pass < numPasses; ++pass)
   {
     int num_blocks_per_merge = 2 << pass;
+
     locate_merge_paths(merge_paths->get(), numBlocks + 1, source, n, work_per_block, num_blocks_per_merge, comp);
-    
-    merge_adjacent_partitions<block_size, work_per_thread><<<numBlocks, launch.x>>>(num_blocks_per_merge, source, n, merge_paths->get(), dest, comp);
+
+    merge_adjacent_partitions<block_size, work_per_thread>(num_blocks_per_merge, source, n, merge_paths->get(), dest, comp);
 
     std::swap(dest, source);
   }

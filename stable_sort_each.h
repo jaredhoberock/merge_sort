@@ -7,6 +7,7 @@
 #include <thrust/detail/minmax.h>
 #include <thrust/detail/swap.h>
 #include <thrust/detail/util/blocking.h>
+#include <thrust/system/cuda/detail/detail/launch_closure.h>
 
 
 namespace static_stable_odd_even_transpose_sort_detail
@@ -192,32 +193,47 @@ template<unsigned int block_size,
          unsigned int work_per_thread,
          typename RandomAccessIterator1,
          typename Size,
-         typename RandomAccessIterator2, 
+         typename RandomAccessIterator2,
          typename Compare>
-__global__
-void stable_sort_each_copy_kernel(RandomAccessIterator1 first,
-                                  Size n,
-                                  RandomAccessIterator2 result,
-                                  Compare comp)
+struct stable_sort_each_copy_closure
 {
-  typedef typename thrust::iterator_value<RandomAccessIterator1>::type value_type;
+  typedef thrust::system::cuda::detail::detail::statically_blocked_thread_array<block_size> context_type;
 
-  unsigned int work_per_block = block_size * work_per_thread;
-  unsigned int offset = work_per_block * blockIdx.x;
-  unsigned int tile_size = min(work_per_block, n - offset);
+  RandomAccessIterator1 first;
+  Size n;
+  RandomAccessIterator2 result;
+  thrust::detail::wrapped_function<Compare,bool> comp;
 
-  // stage this operation through smem
-  __shared__ value_type s_keys[block_size * (work_per_thread + 1)];
-  
-  // load input tile into smem
-  ::block::copy_n_global_to_shared<block_size,work_per_thread>(first + offset, tile_size, s_keys);
+  stable_sort_each_copy_closure(RandomAccessIterator1 first, Size n, RandomAccessIterator2 result, Compare comp)
+    : first(first),
+      n(n),
+      result(result),
+      comp(comp)
+  {}
 
-  // sort input in smem
-  ::block::bounded_stable_sort<block_size,work_per_thread>(s_keys, tile_size, comp);
-  
-  // store result to gmem
-  ::block::copy_n<block_size>(s_keys, tile_size, result + offset);
-}
+
+  __device__ __forceinline__
+  void operator()()
+  {
+    typedef typename thrust::iterator_value<RandomAccessIterator1>::type value_type;
+
+    unsigned int work_per_block = block_size * work_per_thread;
+    unsigned int offset = work_per_block * blockIdx.x;
+    unsigned int tile_size = min(work_per_block, n - offset);
+
+    // stage this operation through smem
+    __shared__ value_type s_keys[block_size * (work_per_thread + 1)];
+    
+    // load input tile into smem
+    ::block::copy_n_global_to_shared<block_size,work_per_thread>(first + offset, tile_size, s_keys);
+
+    // sort input in smem
+    ::block::bounded_stable_sort<block_size,work_per_thread>(s_keys, tile_size, comp);
+    
+    // store result to gmem
+    ::block::copy_n<block_size>(s_keys, tile_size, result + offset);
+  }
+};
 
 
 template<unsigned int block_size,
@@ -229,8 +245,23 @@ void stable_sort_each_copy(RandomAccessIterator1 first, RandomAccessIterator1 la
                            RandomAccessIterator2 result,
                            Compare comp)
 {
-  typename thrust::iterator_difference<RandomAccessIterator1>::type n = last - first;
+  typedef typename thrust::iterator_difference<RandomAccessIterator1>::type difference_type;
+
+  difference_type n = last - first;
+
   int num_blocks = thrust::detail::util::divide_ri(n, block_size * work_per_thread);
-  stable_sort_each_copy_kernel<block_size, work_per_thread><<<num_blocks, block_size>>>(first, n, result, comp);
+
+  typedef stable_sort_each_copy_closure<
+    block_size,
+    work_per_thread,
+    RandomAccessIterator1,
+    difference_type,
+    RandomAccessIterator2,
+    Compare
+  > closure_type;
+  
+  closure_type closure(first, n, result, comp);
+
+  thrust::system::cuda::detail::detail::launch_closure(closure, num_blocks, block_size);
 }
 

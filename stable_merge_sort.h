@@ -130,8 +130,8 @@ void staged_bounded_merge(Iterator1 first1, Size1 n1,
 
   // stage the input through shared memory.
   // XXX replacing copy_n_global_to_shared with copy_n results in a 10% performance hit
-  ::block::copy_n_global_to_shared<block_size, work_per_thread>(first1, n1, s_keys.begin());
-  ::block::copy_n_global_to_shared<block_size, work_per_thread>(first2, n2, s_keys.begin() + n1);
+  ::block::async_copy_n_global_to_shared<block_size, work_per_thread>(first1, n1, s_keys.begin());
+  ::block::async_copy_n_global_to_shared<block_size, work_per_thread>(first2, n2, s_keys.begin() + n1);
   __syncthreads();
 
   // cooperatively merge in place
@@ -139,7 +139,6 @@ void staged_bounded_merge(Iterator1 first1, Size1 n1,
   
   // store result in smem to result
   ::block::copy_n<block_size>(s_keys.begin(), n1 + n2, result);
-  __syncthreads();
 }
 
 

@@ -7,7 +7,7 @@ namespace block
 
 template<unsigned int block_size, typename Iterator1, typename Size, typename Iterator2>
 __device__
-void copy_n(Iterator1 first, Size n, Iterator2 result)
+void async_copy_n(Iterator1 first, Size n, Iterator2 result)
 {
   for(Size i = threadIdx.x; i < n; i += block_size)
   {
@@ -16,9 +16,18 @@ void copy_n(Iterator1 first, Size n, Iterator2 result)
 }
 
 
+template<unsigned int block_size, typename Iterator1, typename Size, typename Iterator2>
+__device__
+void copy_n(Iterator1 first, Size n, Iterator2 result)
+{
+  async_copy_n<block_size>(first, n, result);
+  __syncthreads();
+}
+
+
 template<unsigned int block_size, unsigned int work_per_thread, typename Iterator1, typename Size, typename Iterator2>
 __device__
-void copy_n_global_to_shared(Iterator1 first, Size n, Iterator2 result)
+void async_copy_n_global_to_shared(Iterator1 first, Size n, Iterator2 result)
 {
   typedef typename thrust::iterator_value<Iterator1>::type value_type;
 
@@ -64,6 +73,15 @@ void copy_n_global_to_shared(Iterator1 first, Size n, Iterator2 result)
       if(idx < n) result[idx] = reg[i];
     }
   }
+}
+
+
+template<unsigned int block_size, unsigned int work_per_thread, typename Iterator1, typename Size, typename Iterator2>
+__device__
+void copy_n_global_to_shared(Iterator1 first, Size n, Iterator2 result)
+{
+  async_copy_n_global_to_shared<block_size,work_per_thread>(first, n, result);
+  __syncthreads();
 }
 
 

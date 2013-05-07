@@ -211,14 +211,12 @@ void stable_sort_each_copy_kernel(RandomAccessIterator1 first,
   
   // load input tile into smem
   ::block::copy_n_global_to_shared<block_size,work_per_thread>(first + offset, tile_size, s_keys);
-  __syncthreads();
 
   // sort input in smem
   ::block::bounded_stable_sort<block_size,work_per_thread>(s_keys, tile_size, comp);
   
   // store result to gmem
   ::block::copy_n<block_size>(s_keys, tile_size, result + offset);
-  __syncthreads();
 }
 
 

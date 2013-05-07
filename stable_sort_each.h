@@ -5,47 +5,62 @@
 #include "merge.h"
 #include <thrust/copy.h>
 #include <thrust/detail/seq.h>
+#include <thrust/detail/minmax.h>
 
 
-template<int block_size, int work_per_thread, typename T, typename Comp>
-__device__
-void CTABlocksortPass(T* keys_shared, int tid, int count, int num_threads_per_merge, T* keys, Comp comp)
+namespace block
 {
-  int list = ~(num_threads_per_merge - 1) & tid;
-  int diag = min(count, work_per_thread * ((num_threads_per_merge - 1) & tid));
-  int start = work_per_thread * list;
-  int a0 = min(count, start);
-  int b0 = min(count, start + work_per_thread * (num_threads_per_merge / 2));
-  int b1 = min(count, start + work_per_thread * num_threads_per_merge);
-  
-  int mp = merge_path(diag, keys_shared + a0, b0 - a0, keys_shared + b0, b1 - b0, comp);
-  
-  sequential_bounded_merge<work_per_thread>(keys_shared + a0 + mp,        keys_shared + b0,
-                                            keys_shared + b0 + diag - mp, keys_shared + b1,
-                                            keys,
-                                            comp);
-  __syncthreads();
-}
 
 
-template<int NT, int VT, typename KeyType, typename Comp>
+template<unsigned int block_size, unsigned int work_per_thread, typename Iterator, typename Size, typename Compare>
 __device__
-void CTABlocksortLoop(KeyType* keys_shared,
-                      int tid,
-                      int count, 
-                      Comp comp)
+void bounded_inplace_merge_adjacent_partitions(Iterator first,
+                                               Size n,
+                                               Compare comp)
 {
-  #pragma unroll
-  for(int num_threads_per_merge = 2; num_threads_per_merge <= NT; num_threads_per_merge *= 2)
+  typedef typename thrust::iterator_value<Iterator>::type value_type;
+
+  // the end of the input
+  Iterator last = first + n;
+
+  for(Size num_threads_per_merge = 2; num_threads_per_merge <= block_size; num_threads_per_merge *= 2)
   {
-    KeyType local_result[VT];
-    ::CTABlocksortPass<NT, VT>(keys_shared, tid, count, num_threads_per_merge, local_result, comp);
-    
-    // Store results in shared memory in sorted order.
-    thrust::copy_n(thrust::seq, local_result, VT, keys_shared + tid * VT);
+    // find the index of the first array this thread will merge
+    Size list = ~(num_threads_per_merge - 1) & threadIdx.x;
+    Size diag = min(n, work_per_thread * ((num_threads_per_merge - 1) & threadIdx.x));
+    Size input_start = work_per_thread * list;
+
+    // the size of each of the two input arrays we're merging
+    Size input_size = work_per_thread * (num_threads_per_merge / 2);
+
+    // find the limits of the partitions of the input this group of threads will merge
+    Iterator partition_first1 = thrust::min(last, first + input_start);
+    Iterator partition_first2 = thrust::min(last, partition_first1 + input_size); 
+    Iterator partition_last2  = thrust::min(last, partition_first2 + input_size);
+
+    Size mp = merge_path(diag,
+                         partition_first1, partition_first2 - partition_first1,
+                         partition_first2, partition_last2  - partition_first2,
+                         comp);
+
+    // each thread merges sequentially locally
+    value_type local_result[work_per_thread];
+    sequential_bounded_merge<work_per_thread>(partition_first1 + mp,        partition_first2,
+                                              partition_first2 + diag - mp, partition_last2,
+                                              local_result,
+                                              comp);
+
+    __syncthreads();
+
+    // store local results
+    thrust::copy_n(thrust::seq, local_result, work_per_thread, first + threadIdx.x * work_per_thread);
+
     __syncthreads();
   }
 }
+
+
+} // end block
 
 
 template<int NT, int VT, bool HasValues, typename KeyType, typename ValType, typename Comp>
@@ -67,9 +82,8 @@ void CTAMergesort(KeyType threadKeys[VT],
   // Store the locally sorted keys into shared memory.
   thrust::copy_n(thrust::seq, threadKeys, VT, keys_shared + tid * VT);
   __syncthreads();
-  
-  // Recursively merge lists until the entire CTA is sorted.
-  ::CTABlocksortLoop<NT, VT>(keys_shared, tid, count, comp);
+
+  block::bounded_inplace_merge_adjacent_partitions<NT,VT>(keys_shared, count, comp);
 }
 
 

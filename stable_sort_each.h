@@ -8,6 +8,7 @@
 #include <thrust/detail/swap.h>
 #include <thrust/detail/util/blocking.h>
 #include <thrust/system/cuda/detail/detail/launch_closure.h>
+#include <thrust/system/cuda/detail/detail/uninitialized.h>
 
 
 namespace static_stable_odd_even_transpose_sort_detail
@@ -222,16 +223,16 @@ struct stable_sort_each_copy_closure
     unsigned int tile_size = min(work_per_block, n - offset);
 
     // stage this operation through smem
-    __shared__ value_type s_keys[block_size * (work_per_thread + 1)];
+    __shared__ thrust::system::cuda::detail::detail::uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;;
     
     // load input tile into smem
-    ::block::copy_n_global_to_shared<block_size,work_per_thread>(first + offset, tile_size, s_keys);
+    ::block::copy_n_global_to_shared<block_size,work_per_thread>(first + offset, tile_size, s_keys.begin());
 
     // sort input in smem
-    ::block::bounded_stable_sort<block_size,work_per_thread>(s_keys, tile_size, comp);
+    ::block::bounded_stable_sort<block_size,work_per_thread>(s_keys.begin(), tile_size, comp);
     
     // store result to gmem
-    ::block::copy_n<block_size>(s_keys, tile_size, result + offset);
+    ::block::copy_n<block_size>(s_keys.begin(), tile_size, result + offset);
   }
 };
 

@@ -110,12 +110,10 @@ void bounded_inplace_merge_adjacent_partitions(Iterator first,
 } // end block
 
 
-template<int NT, int VT, bool HasValues, typename KeyType, typename ValType, typename Comp>
+template<int NT, int VT, typename KeyType, typename Comp>
 __device__
 void CTAMergesort(KeyType threadKeys[VT],
-                  ValType threadValues[VT],
                   KeyType* keys_shared,
-                  ValType* values_shared,
                   int count,
                   int tid, 
                   Comp comp)
@@ -156,29 +154,19 @@ void KernelBlocksort(KeyIt1 keysSource_global,
   const int NT = block_size;
   const int VT = work_per_thread;
   const int NV = NT * VT;
-  union Shared {
-  	KeyType keys[NT * (VT + 1)];
-  	ValType values[NV];
-  };
-  __shared__ Shared shared;
+
+  __shared__ KeyType s_keys[NT * (VT + 1)];
   
   int tid = threadIdx.x;
   int block = blockIdx.x;
   int gid = NV * block;
   int count2 = min(NV, count - gid);
   
-  // Load the values into thread order.
-  ValType threadValues[VT];
-  if(HasValues) {
-    mgpu::DeviceGlobalToShared<NT, VT>(count2, valsSource_global + gid, tid, shared.values);
-    mgpu::DeviceSharedToThread<VT>(shared.values, tid, threadValues);
-  }
-  
   // Load keys into shared memory and transpose into register in thread order.
   KeyType threadKeys[VT];
-  ::block::copy_n_global_to_shared<NT,VT>(keysSource_global + gid, count2, shared.keys);
+  ::block::copy_n_global_to_shared<NT,VT>(keysSource_global + gid, count2, s_keys);
   __syncthreads();
-  thrust::copy_n(thrust::seq, shared.keys + tid * VT, VT, threadKeys);
+  thrust::copy_n(thrust::seq, s_keys + tid * VT, VT, threadKeys);
   
   // If we're in the last tile, set the uninitialized keys for the thread with
   // a partial number of keys.
@@ -197,10 +185,10 @@ void KernelBlocksort(KeyIt1 keysSource_global,
     	if(first + i >= count2) threadKeys[i] = maxKey;
   }
   
-  ::CTAMergesort<NT, VT, HasValues>(threadKeys, threadValues, shared.keys, shared.values, count2, tid, comp);
+  ::CTAMergesort<NT, VT>(threadKeys, s_keys, count2, tid, comp);
   
   // Store the sorted keys to global.
-  ::block::copy_n<block_size>(shared.keys, count2, keysDest_global + gid);
+  ::block::copy_n<block_size>(s_keys, count2, keysDest_global + gid);
   __syncthreads();
 }
 

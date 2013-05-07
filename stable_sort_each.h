@@ -7,27 +7,6 @@
 #include <thrust/detail/seq.h>
 
 
-template<int VT, typename T, typename Comp>
-__device__
-void SerialMerge(const T* keys_shared, int first1, int last1, int first2, int last2, T* result, Comp comp)
-{ 
-  T aKey = keys_shared[first1];
-  T bKey = keys_shared[first2];
-  
-  #pragma unroll
-  for(int i = 0; i < VT; ++i, ++result)
-  {
-    bool p = (first2 >= last2) || ((first1 < last1) && !comp(bKey, aKey));
-    
-    *result = p ? aKey : bKey;
-    
-    if(p) aKey = keys_shared[++first1];
-    else bKey = keys_shared[++first2];
-  }
-  __syncthreads();
-}
-
-
 template<int NT, int VT, typename T, typename Comp>
 __device__
 void CTABlocksortPass(T* keys_shared, int tid, int count, int coop, T* keys, Comp comp)

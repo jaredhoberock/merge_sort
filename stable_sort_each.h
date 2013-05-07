@@ -7,23 +7,23 @@
 #include <thrust/detail/seq.h>
 
 
-template<int NT, int VT, typename T, typename Comp>
+template<int block_size, int work_per_thread, typename T, typename Comp>
 __device__
-void CTABlocksortPass(T* keys_shared, int tid, int count, int coop, T* keys, Comp comp)
+void CTABlocksortPass(T* keys_shared, int tid, int count, int num_threads_per_merge, T* keys, Comp comp)
 {
-  int list = ~(coop - 1) & tid;
-  int diag = min(count, VT * ((coop - 1) & tid));
-  int start = VT * list;
+  int list = ~(num_threads_per_merge - 1) & tid;
+  int diag = min(count, work_per_thread * ((num_threads_per_merge - 1) & tid));
+  int start = work_per_thread * list;
   int a0 = min(count, start);
-  int b0 = min(count, start + VT * (coop / 2));
-  int b1 = min(count, start + VT * coop);
+  int b0 = min(count, start + work_per_thread * (num_threads_per_merge / 2));
+  int b1 = min(count, start + work_per_thread * num_threads_per_merge);
   
   int mp = merge_path(diag, keys_shared + a0, b0 - a0, keys_shared + b0, b1 - b0, comp);
   
-  sequential_bounded_merge<VT>(keys_shared + a0 + mp,        keys_shared + b0,
-                               keys_shared + b0 + diag - mp, keys_shared + b1,
-                               keys,
-                               comp);
+  sequential_bounded_merge<work_per_thread>(keys_shared + a0 + mp,        keys_shared + b0,
+                                            keys_shared + b0 + diag - mp, keys_shared + b1,
+                                            keys,
+                                            comp);
   __syncthreads();
 }
 
@@ -36,13 +36,13 @@ void CTABlocksortLoop(KeyType* keys_shared,
                       Comp comp)
 {
   #pragma unroll
-  for(int coop = 2; coop <= NT; coop *= 2)
+  for(int num_threads_per_merge = 2; num_threads_per_merge <= NT; num_threads_per_merge *= 2)
   {
-    KeyType keys[VT];
-    ::CTABlocksortPass<NT, VT>(keys_shared, tid, count, coop, keys, comp);
+    KeyType local_result[VT];
+    ::CTABlocksortPass<NT, VT>(keys_shared, tid, count, num_threads_per_merge, local_result, comp);
     
     // Store results in shared memory in sorted order.
-    thrust::copy_n(thrust::seq, keys, VT, keys_shared + tid * VT);
+    thrust::copy_n(thrust::seq, local_result, VT, keys_shared + tid * VT);
     __syncthreads();
   }
 }

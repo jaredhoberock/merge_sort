@@ -107,28 +107,57 @@ void bounded_inplace_merge_adjacent_partitions(Iterator first,
 }
 
 
-} // end block
-
-
 template<unsigned int block_size, unsigned int work_per_thread, typename KeyType, typename Compare>
 __device__
-void CTAMergesort(KeyType threadKeys[work_per_thread],
-                  KeyType* keys_shared,
-                  int count,
-                  Compare comp)
+void bounded_stable_sort(KeyType *keys_shared,
+                         int count,
+                         Compare comp)
 {
-  // Stable sort the keys in the thread.
+  // each thread creates a local copy of its partition of the array
+  KeyType local_keys[work_per_thread];
+  thrust::copy_n(thrust::seq, keys_shared + threadIdx.x * work_per_thread, work_per_thread, local_keys);
+  
+  // if we're in the final partial tile, fill the remainder of the local_keys with with the max value
+  unsigned int first = work_per_thread * threadIdx.x;
+  if(first + work_per_thread > count && first < count)
+  {
+    KeyType max_key = local_keys[0];
+
+    #pragma unroll
+    for(unsigned int i = 1; i < work_per_thread; ++i)
+    {
+      if(first + i < count)
+      {
+        max_key = comp(max_key, local_keys[i]) ? local_keys[i] : max_key;
+      }
+    }
+    
+    // fill in the uninitialized elements with max_key
+    #pragma unroll
+    for(unsigned int i = 0; i < work_per_thread; ++i)
+    {
+      if(first + i >= count)
+      {
+        local_keys[i] = max_key;
+      }
+    }
+  }
+
+  // stable sort the keys in the thread.
   if(work_per_thread * threadIdx.x < count)
   {
-    static_stable_sort<work_per_thread>(threadKeys, comp);
+    static_stable_sort<work_per_thread>(local_keys, comp);
   }
   
   // Store the locally sorted keys into shared memory.
-  thrust::copy_n(thrust::seq, threadKeys, work_per_thread, keys_shared + threadIdx.x * work_per_thread);
+  thrust::copy_n(thrust::seq, local_keys, work_per_thread, keys_shared + threadIdx.x * work_per_thread);
   __syncthreads();
 
   block::bounded_inplace_merge_adjacent_partitions<block_size,work_per_thread>(keys_shared, count, comp);
 }
+
+
+} // end block
 
 
 template<unsigned int block_size,
@@ -156,38 +185,19 @@ void KernelBlocksort(KeyIt1 keysSource_global,
 
   __shared__ KeyType s_keys[NT * (VT + 1)];
   
-  int tid = threadIdx.x;
   int block = blockIdx.x;
   int gid = NV * block;
-  int count2 = min(NV, count - gid);
+  int tile_size = min(NV, count - gid);
   
-  // Load keys into shared memory and transpose into register in thread order.
-  KeyType threadKeys[VT];
-  ::block::copy_n_global_to_shared<NT,VT>(keysSource_global + gid, count2, s_keys);
+  // load input tile into smem
+  ::block::copy_n_global_to_shared<NT,VT>(keysSource_global + gid, tile_size, s_keys);
   __syncthreads();
-  thrust::copy_n(thrust::seq, s_keys + tid * VT, VT, threadKeys);
+
+  // sort input in smem
+  ::block::bounded_stable_sort<NT,VT>(s_keys, tile_size, comp);
   
-  // If we're in the last tile, set the uninitialized keys for the thread with
-  // a partial number of keys.
-  int first = VT * tid;
-  if(first + VT > count2 && first < count2)
-  {
-    KeyType maxKey = threadKeys[0];
-    #pragma unroll
-    for(int i = 1; i < VT; ++i)
-    	if(first + i < count2)
-    		maxKey = comp(maxKey, threadKeys[i]) ? threadKeys[i] : maxKey;
-    
-    // Fill in the uninitialized elements with max key.
-    #pragma unroll
-    for(int i = 0; i < VT; ++i)
-    	if(first + i >= count2) threadKeys[i] = maxKey;
-  }
-  
-  ::CTAMergesort<NT, VT>(threadKeys, s_keys, count2, tid, comp);
-  
-  // Store the sorted keys to global.
-  ::block::copy_n<block_size>(s_keys, count2, keysDest_global + gid);
+  // store result to gmem
+  ::block::copy_n<block_size>(s_keys, tile_size, keysDest_global + gid);
   __syncthreads();
 }
 

@@ -39,7 +39,7 @@ template<typename Size, typename Iterator1, typename Iterator2, typename Compare
 __device__
 Size merge_path(Size pos, Iterator1 first1, Size n1, Iterator2 first2, Size n2, Compare comp)
 {
-  Size begin = thrust::max<Size>(Size(0), pos - n2);
+  Size begin = (pos >= n2) ? (pos - n2) : Size(0);
   Size end = thrust::min<Size>(pos, n1);
   
   while(begin < end)

@@ -102,10 +102,10 @@ void bounded_inplace_merge_adjacent_partitions(Iterator first,
     Iterator partition_first2 = thrust::min(last, partition_first1 + input_size); 
     Iterator partition_last2  = thrust::min(last, partition_first2 + input_size);
 
-    Size mp = merge_path(diag,
-                         partition_first1, partition_first2 - partition_first1,
-                         partition_first2, partition_last2  - partition_first2,
-                         comp);
+    Size n1 = partition_first2 - partition_first1;
+    Size n2 = partition_last2  - partition_first2;
+
+    Size mp = merge_path(diag, partition_first1, n1, partition_first2, n2, comp);
 
     // each thread merges sequentially locally
     value_type local_result[work_per_thread];
@@ -160,7 +160,7 @@ void bounded_stable_sort(RandomAccessIterator first,
       }
     }
     
-    // fill in the uninitialized elements with max_key
+    // fill in the remainder with max_key
     #pragma unroll
     for(unsigned int i = 0; i < work_per_thread; ++i)
     {
@@ -206,26 +206,23 @@ void KernelBlocksort(KeyIt1 keysSource_global,
 {
   typedef typename std::iterator_traits<KeyIt1>::value_type KeyType;
   typedef typename std::iterator_traits<ValIt1>::value_type ValType;
-  
-  const int NT = block_size;
-  const int VT = work_per_thread;
-  const int NV = NT * VT;
 
-  __shared__ KeyType s_keys[NT * (VT + 1)];
-  
-  int block = blockIdx.x;
-  int gid = NV * block;
-  int tile_size = min(NV, count - gid);
+  unsigned int work_per_block = block_size * work_per_thread;
+  unsigned int offset = work_per_block * blockIdx.x;
+  unsigned int tile_size = min(work_per_block, count - offset);
+
+  // stage this operation through smem
+  __shared__ KeyType s_keys[block_size * (work_per_thread + 1)];
   
   // load input tile into smem
-  ::block::copy_n_global_to_shared<NT,VT>(keysSource_global + gid, tile_size, s_keys);
+  ::block::copy_n_global_to_shared<block_size,work_per_thread>(keysSource_global + offset, tile_size, s_keys);
   __syncthreads();
 
   // sort input in smem
-  ::block::bounded_stable_sort<NT,VT>(s_keys, tile_size, comp);
+  ::block::bounded_stable_sort<block_size,work_per_thread>(s_keys, tile_size, comp);
   
   // store result to gmem
-  ::block::copy_n<block_size>(s_keys, tile_size, keysDest_global + gid);
+  ::block::copy_n<block_size>(s_keys, tile_size, keysDest_global + offset);
   __syncthreads();
 }
 

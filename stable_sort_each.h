@@ -8,20 +8,20 @@
 
 template<int VT, typename T, typename Comp>
 __device__
-void SerialMerge(const T* keys_shared, int aBegin, int aEnd, int bBegin, int bEnd, T* results, Comp comp)
+void SerialMerge(const T* keys_shared, int first1, int last1, int first2, int last2, T* result, Comp comp)
 { 
-  T aKey = keys_shared[aBegin];
-  T bKey = keys_shared[bBegin];
+  T aKey = keys_shared[first1];
+  T bKey = keys_shared[first2];
   
   #pragma unroll
   for(int i = 0; i < VT; ++i)
   {
-    bool p = (bBegin >= bEnd) || ((aBegin < aEnd) && !comp(bKey, aKey));
+    bool p = (first2 >= last2) || ((first1 < last1) && !comp(bKey, aKey));
     
-    results[i] = p ? aKey : bKey;
+    result[i] = p ? aKey : bKey;
     
-    if(p) aKey = keys_shared[++aBegin];
-    else bKey = keys_shared[++bBegin];
+    if(p) aKey = keys_shared[++first1];
+    else bKey = keys_shared[++first2];
   }
   __syncthreads();
 }

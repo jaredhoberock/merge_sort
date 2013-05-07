@@ -6,9 +6,9 @@
 #include <thrust/detail/seq.h>
 
 
-template<int VT, bool RangeCheck, typename T, typename Comp>
+template<int VT, typename T, typename Comp>
 __device__
-void SerialMerge(const T* keys_shared, int aBegin, int aEnd, int bBegin, int bEnd, T* results, int* indices, Comp comp)
+void SerialMerge(const T* keys_shared, int aBegin, int aEnd, int bBegin, int bEnd, T* results, Comp comp)
 { 
   T aKey = keys_shared[aBegin];
   T bKey = keys_shared[bBegin];
@@ -16,14 +16,9 @@ void SerialMerge(const T* keys_shared, int aBegin, int aEnd, int bBegin, int bEn
   #pragma unroll
   for(int i = 0; i < VT; ++i)
   {
-    bool p;
-    if(RangeCheck) 
-    	p = (bBegin >= bEnd) || ((aBegin < aEnd) && !comp(bKey, aKey));
-    else
-    	p = !comp(bKey, aKey);
+    bool p = (bBegin >= bEnd) || ((aBegin < aEnd) && !comp(bKey, aKey));
     
     results[i] = p ? aKey : bKey;
-    indices[i] = p ? aBegin : bBegin;
     
     if(p) aKey = keys_shared[++aBegin];
     else bKey = keys_shared[++bBegin];
@@ -34,7 +29,7 @@ void SerialMerge(const T* keys_shared, int aBegin, int aEnd, int bBegin, int bEn
 
 template<int NT, int VT, typename T, typename Comp>
 __device__
-void CTABlocksortPass(T* keys_shared, int tid, int count, int coop, T* keys, int* indices, Comp comp)
+void CTABlocksortPass(T* keys_shared, int tid, int count, int coop, T* keys, Comp comp)
 {
   int list = ~(coop - 1) & tid;
   int diag = min(count, VT * ((coop - 1) & tid));
@@ -45,7 +40,7 @@ void CTABlocksortPass(T* keys_shared, int tid, int count, int coop, T* keys, int
   
   int p = mgpu::MergePath<mgpu::MgpuBoundsLower>(keys_shared + a0, b0 - a0, keys_shared + b0, b1 - b0, diag, comp);
   
-  ::SerialMerge<VT, true>(keys_shared, a0 + p, b0, b0 + diag - p, b1, keys, indices, comp);
+  ::SerialMerge<VT>(keys_shared, a0 + p, b0, b0 + diag - p, b1, keys, comp);
 }
 
 
@@ -59,9 +54,8 @@ void CTABlocksortLoop(KeyType* keys_shared,
   #pragma unroll
   for(int coop = 2; coop <= NT; coop *= 2)
   {
-    int indices[VT];
     KeyType keys[VT];
-    ::CTABlocksortPass<NT, VT>(keys_shared, tid, count, coop, keys, indices, comp);
+    ::CTABlocksortPass<NT, VT>(keys_shared, tid, count, coop, keys, comp);
     
     // Store results in shared memory in sorted order.
     thrust::copy_n(thrust::seq, keys, VT, keys_shared + tid * VT);

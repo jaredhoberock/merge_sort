@@ -2,6 +2,7 @@
 
 #include <moderngpu.cuh>
 #include "copy.h"
+#include "merge.h"
 #include <thrust/copy.h>
 #include <thrust/detail/seq.h>
 
@@ -14,11 +15,11 @@ void SerialMerge(const T* keys_shared, int first1, int last1, int first2, int la
   T bKey = keys_shared[first2];
   
   #pragma unroll
-  for(int i = 0; i < VT; ++i)
+  for(int i = 0; i < VT; ++i, ++result)
   {
     bool p = (first2 >= last2) || ((first1 < last1) && !comp(bKey, aKey));
     
-    result[i] = p ? aKey : bKey;
+    *result = p ? aKey : bKey;
     
     if(p) aKey = keys_shared[++first1];
     else bKey = keys_shared[++first2];
@@ -40,7 +41,11 @@ void CTABlocksortPass(T* keys_shared, int tid, int count, int coop, T* keys, Com
   
   int p = mgpu::MergePath<mgpu::MgpuBoundsLower>(keys_shared + a0, b0 - a0, keys_shared + b0, b1 - b0, diag, comp);
   
-  ::SerialMerge<VT>(keys_shared, a0 + p, b0, b0 + diag - p, b1, keys, comp);
+  sequential_bounded_merge<VT>(keys_shared + a0 + p,        keys_shared + b0,
+                               keys_shared + b0 + diag - p, keys_shared + b1,
+                               keys,
+                               comp);
+  __syncthreads();
 }
 
 

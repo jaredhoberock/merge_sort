@@ -110,25 +110,24 @@ void bounded_inplace_merge_adjacent_partitions(Iterator first,
 } // end block
 
 
-template<int NT, int VT, typename KeyType, typename Comp>
+template<unsigned int block_size, unsigned int work_per_thread, typename KeyType, typename Compare>
 __device__
-void CTAMergesort(KeyType threadKeys[VT],
+void CTAMergesort(KeyType threadKeys[work_per_thread],
                   KeyType* keys_shared,
                   int count,
-                  int tid, 
-                  Comp comp)
+                  Compare comp)
 {
   // Stable sort the keys in the thread.
-  if(VT * tid < count)
+  if(work_per_thread * threadIdx.x < count)
   {
-    static_stable_sort<VT>(threadKeys, comp);
+    static_stable_sort<work_per_thread>(threadKeys, comp);
   }
   
   // Store the locally sorted keys into shared memory.
-  thrust::copy_n(thrust::seq, threadKeys, VT, keys_shared + tid * VT);
+  thrust::copy_n(thrust::seq, threadKeys, work_per_thread, keys_shared + threadIdx.x * work_per_thread);
   __syncthreads();
 
-  block::bounded_inplace_merge_adjacent_partitions<NT,VT>(keys_shared, count, comp);
+  block::bounded_inplace_merge_adjacent_partitions<block_size,work_per_thread>(keys_shared, count, comp);
 }
 
 

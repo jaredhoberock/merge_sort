@@ -441,3 +441,15 @@ void stable_merge_sort(thrust::system::cuda::execution_policy<DerivedPolicy> &ex
   stable_merge_sort_detail2::stable_merge_sort(exec, first, last, comp);
 }
 
+template<typename DerivedPolicy, typename RandomAccessIterator, typename Compare>
+void stable_merge_sort(const thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
+                       RandomAccessIterator first,
+                       RandomAccessIterator last,
+                       Compare comp)
+{
+  stable_merge_sort(const_cast<thrust::system::cuda::execution_policy<DerivedPolicy>&>(exec),
+                    first,
+                    last,
+                    comp);
+}
+

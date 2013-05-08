@@ -35,20 +35,7 @@ void generate_random_data(Vector &vec)
 }
 
 
-struct my_policy
-  : thrust::system::cuda::execution_policy<my_policy>
-{
-  my_policy()
-    : ctx(mgpu::CreateCudaDevice(0))
-  {}
-
-  mgpu::ContextPtr ctx;
-
-  cached_allocator alloc;
-};
-
-
-void do_it(my_policy &exec, size_t n)
+void do_it(cached_allocator &alloc, size_t n)
 {
   std::vector<T> h_data(n);
   generate_random_data(h_data);
@@ -57,7 +44,7 @@ void do_it(my_policy &exec, size_t n)
 
   std::stable_sort(h_data.begin(), h_data.end());
 
-  ::stable_merge_sort(exec, d_data.begin(), d_data.end(), thrust::less<T>());
+  ::stable_merge_sort(thrust::cuda::par(alloc), d_data.begin(), d_data.end(), thrust::less<T>());
 
   cudaError_t error = cudaGetLastError();
 
@@ -70,30 +57,32 @@ void do_it(my_policy &exec, size_t n)
 }
 
 
-void my_sort(my_policy *exec, thrust::device_vector<T> *data)
+void my_sort(cached_allocator *alloc, thrust::device_vector<T> *data)
 {
   generate_random_data(*data);
 
-  stable_merge_sort(*exec, data->begin(), data->end(), thrust::less<T>());
+  stable_merge_sort(thrust::cuda::par(*alloc), data->begin(), data->end(), thrust::less<T>());
 }
 
 
-void sean_sort(my_policy *exec, thrust::device_vector<T> *data)
+void sean_sort(mgpu::ContextPtr *ctx, thrust::device_vector<T> *data)
 {
   generate_random_data(*data);
 
-  mgpu::MergesortKeys(thrust::raw_pointer_cast(data->data()), data->size(), thrust::less<T>(), *exec->ctx);
+  mgpu::MergesortKeys(thrust::raw_pointer_cast(data->data()), data->size(), thrust::less<T>(), **ctx);
 }
 
 
 int main()
 {
-  my_policy exec;
+  mgpu::ContextPtr ctx = mgpu::CreateCudaDevice(0);
+
+  cached_allocator alloc;
 
   for(size_t n = 1; n <= 1 << 20; n <<= 1)
   {
     std::cout << "Testing n = " << n << std::endl;
-    do_it(exec, n);
+    do_it(alloc, n);
   }
 
   for(int i = 0; i < 20; ++i)
@@ -101,16 +90,16 @@ int main()
     size_t n = hash_functor()(i) % (1 << 20);
 
     std::cout << "Testing n = " << n << std::endl;
-    do_it(exec, n);
+    do_it(alloc, n);
   }
 
   thrust::device_vector<T> vec(1 << 24);
 
-  sean_sort(&exec, &vec);
-  double sean_msecs = time_invocation_cuda(20, sean_sort, &exec, &vec);
+  sean_sort(&ctx, &vec);
+  double sean_msecs = time_invocation_cuda(20, sean_sort, &ctx, &vec);
 
-  my_sort(&exec, &vec);
-  double my_msecs = time_invocation_cuda(20, my_sort, &exec, &vec);
+  my_sort(&alloc, &vec);
+  double my_msecs = time_invocation_cuda(20, my_sort, &alloc, &vec);
 
   std::cout << "Sean's time: " << sean_msecs << " ms" << std::endl;
   std::cout << "My time: " << my_msecs << " ms" << std::endl;

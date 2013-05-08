@@ -389,23 +389,40 @@ void stable_merge_sort(my_policy &exec,
   difference_type num_passes = log2_ri(num_blocks);
   
   MGPU_MEM(T) destDevice = exec.ctx->Malloc<T>(n);
-  T* source = thrust::raw_pointer_cast(&*first);
-  T* dest = destDevice->get();
-
-  stable_sort_each_copy<block_size, work_per_thread>(source, source + n, is_odd(num_passes) ? dest : source, comp);
-  if(is_odd(num_passes)) std::swap(source, dest);
+  T* temp = destDevice->get();
+  
+  // depending on the number of passes
+  // we'll either do the initial segmented sort inplace or not
+  // ping means the latest data is in the source array
+  bool ping = false;
+  if(is_odd(num_passes))
+  {
+    stable_sort_each_copy<block_size,work_per_thread>(first, last, temp, comp);
+  }
+  else
+  {
+    stable_sort_each_copy<block_size,work_per_thread>(first, last, first, comp);
+    ping = true;
+  }
 
   MGPU_MEM(int) merge_paths = exec.ctx->Malloc<T>(num_blocks + 1);
   
-  for(difference_type pass = 0; pass < num_passes; ++pass)
+  for(difference_type pass = 0; pass < num_passes; ++pass, ping = !ping)
   {
     difference_type num_blocks_per_merge = 2 << pass;
 
-    locate_merge_paths(merge_paths->get(), num_blocks + 1, source, n, work_per_block, num_blocks_per_merge, comp);
+    if(ping)
+    {
+      locate_merge_paths(merge_paths->get(), num_blocks + 1, first, n, work_per_block, num_blocks_per_merge, comp);
 
-    merge_adjacent_partitions<block_size, work_per_thread>(num_blocks_per_merge, source, n, merge_paths->get(), dest, comp);
+      merge_adjacent_partitions<block_size, work_per_thread>(num_blocks_per_merge, first, n, merge_paths->get(), temp, comp);
+    }
+    else
+    {
+      locate_merge_paths(merge_paths->get(), num_blocks + 1, temp, n, work_per_block, num_blocks_per_merge, comp);
 
-    std::swap(dest, source);
+      merge_adjacent_partitions<block_size, work_per_thread>(num_blocks_per_merge, temp, n, merge_paths->get(), first, comp);
+    }
   }
 }
 

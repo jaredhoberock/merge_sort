@@ -2,8 +2,6 @@
 
 #include <iostream>
 #include <limits>
-#include <moderngpu.cuh>
-#include <util/mgpucontext.h>
 #include <thrust/iterator/iterator_traits.h>
 #include <thrust/memory.h>
 #include <thrust/copy.h>
@@ -21,16 +19,7 @@
 #include "stable_sort_each.h"
 #include "copy.h"
 #include "merge.h"
-
-
-struct my_policy
-{
-  my_policy()
-    : ctx(mgpu::CreateCudaDevice(0))
-  {}
-
-  mgpu::ContextPtr ctx;
-};
+#include "cached_allocator.h"
 
 
 namespace stable_merge_sort_detail2
@@ -292,12 +281,19 @@ struct merge_adjacent_partitions_closure
 
 template<unsigned int block_size,
          unsigned int work_per_thread,
+         typename DerivedPolicy,
          typename Size,
          typename Iterator1,
          typename Iterator2,
          typename Iterator3,
          typename Compare>
-void merge_adjacent_partitions(Size num_blocks_per_merge, Iterator1 first, Size n, Iterator2 merge_paths, Iterator3 result, Compare comp)
+void merge_adjacent_partitions(thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
+                               Size num_blocks_per_merge,
+                               Iterator1 first,
+                               Size n,
+                               Iterator2 merge_paths,
+                               Iterator3 result,
+                               Compare comp)
 {
   typedef merge_adjacent_partitions_closure<
     block_size,
@@ -361,17 +357,24 @@ struct locate_merge_path
 };
 
 
-template<typename Iterator1, typename Size, typename Iterator2, typename Compare>
-void locate_merge_paths(Iterator1 result, Size n, Iterator2 haystack_first, Size haystack_size, Size num_elements_per_block, Size num_blocks_per_merge, Compare comp)
+template<typename DerivedPolicy, typename Iterator1, typename Size1, typename Iterator2, typename Size2, typename Compare>
+void locate_merge_paths(thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
+                        Iterator1 result,
+                        Size1 n,
+                        Iterator2 haystack_first,
+                        Size2 haystack_size,
+                        Size2 num_elements_per_block,
+                        Size2 num_blocks_per_merge,
+                        Compare comp)
 {
-  locate_merge_path<Iterator2,Size,Compare> f(haystack_first, haystack_size, num_elements_per_block, num_blocks_per_merge, comp);
+  locate_merge_path<Iterator2,Size2,Compare> f(haystack_first, haystack_size, num_elements_per_block, num_blocks_per_merge, comp);
 
-  thrust::tabulate(thrust::cuda::par, result, result + n, f);
+  thrust::tabulate(exec, result, result + n, f);
 }
 
 
-template<typename RandomAccessIterator, typename Compare>
-void stable_merge_sort(my_policy &exec,
+template<typename DerivedPolicy, typename RandomAccessIterator, typename Compare>
+void stable_merge_sort(thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
                        RandomAccessIterator first,
                        RandomAccessIterator last,
                        Compare comp)
@@ -387,25 +390,24 @@ void stable_merge_sort(my_policy &exec,
 
   difference_type num_blocks = thrust::detail::util::divide_ri(n, work_per_block);
   difference_type num_passes = log2_ri(num_blocks);
-  
-  MGPU_MEM(T) destDevice = exec.ctx->Malloc<T>(n);
-  T* temp = destDevice->get();
+
+  thrust::detail::temporary_array<T,DerivedPolicy> pong_buffer(exec, n);
   
   // depending on the number of passes
   // we'll either do the initial segmented sort inplace or not
-  // ping means the latest data is in the source array
+  // ping being true means the latest data is in the source array
   bool ping = false;
   if(is_odd(num_passes))
   {
-    stable_sort_each_copy<block_size,work_per_thread>(first, last, temp, comp);
+    stable_sort_each_copy<block_size,work_per_thread>(exec, first, last, pong_buffer.begin(), comp);
   }
   else
   {
-    stable_sort_each_copy<block_size,work_per_thread>(first, last, first, comp);
+    stable_sort_each_copy<block_size,work_per_thread>(exec, first, last, first, comp);
     ping = true;
   }
 
-  MGPU_MEM(int) merge_paths = exec.ctx->Malloc<T>(num_blocks + 1);
+  thrust::detail::temporary_array<int,DerivedPolicy> merge_paths(exec, num_blocks + 1);
   
   for(difference_type pass = 0; pass < num_passes; ++pass, ping = !ping)
   {
@@ -413,15 +415,15 @@ void stable_merge_sort(my_policy &exec,
 
     if(ping)
     {
-      locate_merge_paths(merge_paths->get(), num_blocks + 1, first, n, work_per_block, num_blocks_per_merge, comp);
+      locate_merge_paths(exec, merge_paths.begin(), merge_paths.size(), first, n, work_per_block, num_blocks_per_merge, comp);
 
-      merge_adjacent_partitions<block_size, work_per_thread>(num_blocks_per_merge, first, n, merge_paths->get(), temp, comp);
+      merge_adjacent_partitions<block_size, work_per_thread>(exec, num_blocks_per_merge, first, n, merge_paths.begin(), pong_buffer.begin(), comp);
     }
     else
     {
-      locate_merge_paths(merge_paths->get(), num_blocks + 1, temp, n, work_per_block, num_blocks_per_merge, comp);
+      locate_merge_paths(exec, merge_paths.begin(), merge_paths.size(), pong_buffer.begin(), n, work_per_block, num_blocks_per_merge, comp);
 
-      merge_adjacent_partitions<block_size, work_per_thread>(num_blocks_per_merge, temp, n, merge_paths->get(), first, comp);
+      merge_adjacent_partitions<block_size, work_per_thread>(exec, num_blocks_per_merge, pong_buffer.begin(), n, merge_paths.begin(), first, comp);
     }
   }
 }
@@ -430,8 +432,8 @@ void stable_merge_sort(my_policy &exec,
 } // end stable_merge_sort_detail2
 
 
-template<typename RandomAccessIterator, typename Compare>
-void stable_merge_sort(my_policy &exec,
+template<typename DerivedPolicy, typename RandomAccessIterator, typename Compare>
+void stable_merge_sort(thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
                        RandomAccessIterator first,
                        RandomAccessIterator last,
                        Compare comp)

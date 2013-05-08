@@ -9,6 +9,7 @@
 #include <thrust/detail/util/blocking.h>
 #include <thrust/system/cuda/detail/detail/launch_closure.h>
 #include <thrust/system/cuda/detail/detail/uninitialized.h>
+#include <thrust/system/cuda/detail/execution_policy.h>
 
 
 namespace static_stable_odd_even_transpose_sort_detail
@@ -239,10 +240,12 @@ struct stable_sort_each_copy_closure
 
 template<unsigned int block_size,
          unsigned int work_per_thread,
+         typename DerivedPolicy,
          typename RandomAccessIterator1,
          typename RandomAccessIterator2,
          typename Compare>
-void stable_sort_each_copy(RandomAccessIterator1 first, RandomAccessIterator1 last,
+void stable_sort_each_copy(thrust::system::cuda::execution_policy<DerivedPolicy> &,
+                           RandomAccessIterator1 first, RandomAccessIterator1 last,
                            RandomAccessIterator2 result,
                            Compare comp)
 {

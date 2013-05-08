@@ -1,5 +1,7 @@
 #include "stable_merge_sort.h"
 #include "time_invocation_cuda.hpp"
+#include <moderngpu.cuh>
+#include <util/mgpucontext.h>
 #include <thrust/device_vector.h>
 #include <thrust/tabulate.h>
 #include <algorithm>
@@ -31,6 +33,19 @@ void generate_random_data(Vector &vec)
 {
   thrust::tabulate(vec.begin(), vec.end(), hash_functor());
 }
+
+
+struct my_policy
+  : thrust::system::cuda::execution_policy<my_policy>
+{
+  my_policy()
+    : ctx(mgpu::CreateCudaDevice(0))
+  {}
+
+  mgpu::ContextPtr ctx;
+
+  cached_allocator alloc;
+};
 
 
 void do_it(my_policy &exec, size_t n)

@@ -33,7 +33,7 @@ Integer clz(Integer x)
   // XXX optimize by lowering to intrinsics
   
   Integer num_non_sign_bits = std::numeric_limits<Integer>::digits;
-  for(Integer i = num_non_sign_bits; i >= 0; --i)
+  for(int i = num_non_sign_bits; i >= 0; --i)
   {
     if((1 << i) & x)
     {
@@ -436,8 +436,15 @@ void stable_merge_sort(thrust::system::cuda::execution_policy<DerivedPolicy> &ex
 
   difference_type n = last - first;
 
-  // XXX if n can fit into a 32b uint then use that
-  stable_merge_sort_n(exec, first, n, comp);
+  // if difference_type is large and n can fit into a 32b uint then use that
+  if(sizeof(difference_type) > sizeof(thrust::detail::uint32_t) && n <= std::numeric_limits<thrust::detail::uint32_t>::max())
+  {
+    stable_merge_sort_n(exec, first, static_cast<thrust::detail::uint32_t>(n), comp);
+  }
+  else
+  {
+    stable_merge_sort_n(exec, first, n, comp);
+  }
 }
 
 

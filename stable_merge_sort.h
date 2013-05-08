@@ -30,17 +30,17 @@ namespace block
 
 
 // block-wise inplace merge for when we have a static bound on the size of the result (block_size * work_per_thread)
-template<unsigned int block_size,
-         unsigned int work_per_thread,
+template<unsigned int work_per_thread,
+         typename Context,
          typename Iterator,
          typename Size,
          typename Compare>
-__device__ void bounded_inplace_merge(Iterator first, Size n1, Size n2, Compare comp)
+__device__ void bounded_inplace_merge(Context &ctx, Iterator first, Size n1, Size n2, Compare comp)
 {
   Iterator first2 = first + n1;
 
   // don't ask for an out-of-bounds diagonal
-  Size diag = min(n1 + n2, work_per_thread * threadIdx.x);
+  Size diag = thrust::min<Size>(n1 + n2, work_per_thread * ctx.thread_index());
 
   Size mp = merge_path(diag, first, n1, first2, n2, comp);
 
@@ -58,24 +58,26 @@ __device__ void bounded_inplace_merge(Iterator first, Size n1, Size n2, Compare 
                                             first2 + start2, first2 + end2,
                                             local_result, comp);
 
-  __syncthreads();
+  ctx.barrier();
 
   // store the result
   // XXX we unconditionally copy work_per_thread elements here, even if input was partially-sized
-  thrust::copy_n(thrust::seq, local_result, work_per_thread, first + work_per_thread * threadIdx.x);
-  __syncthreads();
+  thrust::copy_n(thrust::seq, local_result, work_per_thread, first + work_per_thread * ctx.thread_index());
+  ctx.barrier();
 }
 
 
 // staged, block-wise merge for when we have a static bound on the size of the result (block_size * work_per_thread)
 template<unsigned int block_size,
          unsigned int work_per_thread,
+         typename Context,
          typename Iterator1, typename Size1,
          typename Iterator2, typename Size2,
          typename Iterator3,
 	 typename Compare>
 __device__
-void staged_bounded_merge(Iterator1 first1, Size1 n1,
+void staged_bounded_merge(Context &ctx,
+                          Iterator1 first1, Size1 n1,
                           Iterator2 first2, Size2 n2,
                           Iterator3 result,
                           Compare comp)
@@ -86,15 +88,15 @@ void staged_bounded_merge(Iterator1 first1, Size1 n1,
   __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
 
   // stage the input through shared memory.
-  ::block::async_copy_n_global_to_shared<block_size, work_per_thread>(first1, n1, s_keys.begin());
-  ::block::async_copy_n_global_to_shared<block_size, work_per_thread>(first2, n2, s_keys.begin() + n1);
-  __syncthreads();
+  ::block::async_copy_n_global_to_shared<work_per_thread>(ctx, first1, n1, s_keys.begin());
+  ::block::async_copy_n_global_to_shared<work_per_thread>(ctx, first2, n2, s_keys.begin() + n1);
+  ctx.barrier();
 
   // cooperatively merge in place
-  block::bounded_inplace_merge<block_size, work_per_thread>(s_keys.begin(), n1, n2, comp);
+  block::bounded_inplace_merge<work_per_thread>(ctx, s_keys.begin(), n1, n2, comp);
   
   // store result in smem to result
-  ::block::copy_n<block_size>(s_keys.begin(), n1 + n2, result);
+  ::block::copy_n(ctx, s_keys.begin(), n1 + n2, result);
 }
 
 
@@ -173,14 +175,17 @@ struct merge_adjacent_partitions_closure
   __thrust_forceinline__ __device__
   void operator()()
   {
-    Size work_per_block = block_size * work_per_thread;
+    context_type ctx;
+
+    Size work_per_block = ctx.block_dimension() * work_per_thread;
     
     Size start1 = 0, end1 = 0, start2 = 0, end2 = 0;
 
     thrust::tie(start1,end1,start2,end2) =
-      locate_merge_partitions(n, blockIdx.x, num_blocks_per_merge, work_per_block, merge_paths[blockIdx.x], merge_paths[blockIdx.x + 1]);
+      locate_merge_partitions(n, blockIdx.x, num_blocks_per_merge, work_per_block, merge_paths[ctx.block_index()], merge_paths[ctx.block_index() + 1]);
     
-    block::staged_bounded_merge<block_size, work_per_thread>(first + start1, end1 - start1,
+    block::staged_bounded_merge<block_size, work_per_thread>(ctx,
+                                                             first + start1, end1 - start1,
                                                              first + start2, end2 - start2,
                                                              result + blockIdx.x * work_per_block,
                                                              comp);

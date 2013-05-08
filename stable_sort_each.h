@@ -79,9 +79,10 @@ namespace block
 {
 
 
-template<unsigned int block_size, unsigned int work_per_thread, typename Iterator, typename Size, typename Compare>
+template<unsigned int work_per_thread, typename Context, typename Iterator, typename Size, typename Compare>
 __device__
-void bounded_inplace_merge_adjacent_partitions(Iterator first,
+void bounded_inplace_merge_adjacent_partitions(Context &ctx,
+                                               Iterator first,
                                                Size n,
                                                Compare comp)
 {
@@ -90,11 +91,11 @@ void bounded_inplace_merge_adjacent_partitions(Iterator first,
   // the end of the input
   Iterator last = first + n;
 
-  for(Size num_threads_per_merge = 2; num_threads_per_merge <= block_size; num_threads_per_merge *= 2)
+  for(Size num_threads_per_merge = 2; num_threads_per_merge <= ctx.block_dimension(); num_threads_per_merge *= 2)
   {
     // find the index of the first array this thread will merge
-    Size list = ~(num_threads_per_merge - 1) & threadIdx.x;
-    Size diag = min(n, work_per_thread * ((num_threads_per_merge - 1) & threadIdx.x));
+    Size list = ~(num_threads_per_merge - 1) & ctx.thread_index();
+    Size diag = min(n, work_per_thread * ((num_threads_per_merge - 1) & ctx.thread_index()));
     Size input_start = work_per_thread * list;
 
     // the size of each of the two input arrays we're merging
@@ -117,22 +118,23 @@ void bounded_inplace_merge_adjacent_partitions(Iterator first,
                                               local_result,
                                               comp);
 
-    __syncthreads();
+    ctx.barrier();
 
     // compute the size of the local result to account for the final, partial tile
-    Size local_result_size = min(work_per_thread, n - (threadIdx.x * work_per_thread));
+    Size local_result_size = min(work_per_thread, n - (ctx.thread_index() * work_per_thread));
 
     // store local results
-    bounded_copy_n<work_per_thread>(local_result, local_result_size, first + threadIdx.x * work_per_thread);
+    bounded_copy_n<work_per_thread>(local_result, local_result_size, first + ctx.thread_index() * work_per_thread);
 
-    __syncthreads();
+    ctx.barrier();
   }
 }
 
 
-template<unsigned int block_size, unsigned int work_per_thread, typename RandomAccessIterator, typename Size, typename Compare>
+template<unsigned int work_per_thread, typename Context, typename RandomAccessIterator, typename Size, typename Compare>
 __device__
-void bounded_stable_sort(RandomAccessIterator first,
+void bounded_stable_sort(Context &ctx,
+                         RandomAccessIterator first,
                          Size n,
                          Compare comp)
 {
@@ -140,14 +142,14 @@ void bounded_stable_sort(RandomAccessIterator first,
 
   // compute the size of this thread's local tile to account for the final, partial tile
   Size local_tile_size = work_per_thread;
-  if(work_per_thread * (threadIdx.x + 1) > n)
+  if(work_per_thread * (ctx.thread_index() + 1) > n)
   {
-    local_tile_size = max(0, n - (work_per_thread * threadIdx.x));
+    local_tile_size = max(0, n - (work_per_thread * ctx.thread_index()));
   }
 
   // each thread creates a local copy of its partition of the array
   value_type local_keys[work_per_thread];
-  bounded_copy_n<work_per_thread>(first + threadIdx.x * work_per_thread, local_tile_size, local_keys);
+  bounded_copy_n<work_per_thread>(first + ctx.thread_index() * work_per_thread, local_tile_size, local_keys);
   
   // if we're in the final partial tile, fill the remainder of the local_keys with with the max value
   if(local_tile_size < work_per_thread)
@@ -175,16 +177,16 @@ void bounded_stable_sort(RandomAccessIterator first,
   }
 
   // stable sort the keys in the thread.
-  if(work_per_thread * threadIdx.x < n)
+  if(work_per_thread * ctx.thread_index() < n)
   {
     static_stable_sort<work_per_thread>(local_keys, comp);
   }
   
   // Store the locally sorted keys into shared memory.
-  bounded_copy_n<work_per_thread>(local_keys, local_tile_size, first + threadIdx.x * work_per_thread);
-  __syncthreads();
+  bounded_copy_n<work_per_thread>(local_keys, local_tile_size, first + ctx.thread_index() * work_per_thread);
+  ctx.barrier();
 
-  block::bounded_inplace_merge_adjacent_partitions<block_size,work_per_thread>(first, n, comp);
+  block::bounded_inplace_merge_adjacent_partitions<work_per_thread>(ctx, first, n, comp);
 }
 
 
@@ -219,21 +221,23 @@ struct stable_sort_each_copy_closure
   {
     typedef typename thrust::iterator_value<RandomAccessIterator1>::type value_type;
 
-    unsigned int work_per_block = block_size * work_per_thread;
-    unsigned int offset = work_per_block * blockIdx.x;
-    unsigned int tile_size = min(work_per_block, n - offset);
+    context_type ctx;
+
+    unsigned int work_per_block = ctx.block_dimension() * work_per_thread;
+    unsigned int offset = work_per_block * ctx.block_index();
+    unsigned int tile_size = thrust::min<unsigned int>(work_per_block, n - offset);
 
     // stage this operation through smem
     __shared__ thrust::system::cuda::detail::detail::uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;;
     
     // load input tile into smem
-    ::block::copy_n_global_to_shared<block_size,work_per_thread>(first + offset, tile_size, s_keys.begin());
+    ::block::copy_n_global_to_shared<work_per_thread>(ctx, first + offset, tile_size, s_keys.begin());
 
     // sort input in smem
-    ::block::bounded_stable_sort<block_size,work_per_thread>(s_keys.begin(), tile_size, comp);
+    ::block::bounded_stable_sort<work_per_thread>(ctx, s_keys.begin(), tile_size, comp);
     
     // store result to gmem
-    ::block::copy_n<block_size>(s_keys.begin(), tile_size, result + offset);
+    ::block::copy_n(ctx, s_keys.begin(), tile_size, result + offset);
   }
 };
 

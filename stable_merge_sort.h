@@ -20,107 +20,13 @@
 #include "copy.h"
 #include "merge.h"
 #include "cached_allocator.h"
+#include "util.h"
 
 
 namespace stable_merge_sort_detail2
 {
-
-
-template<typename Integer>
-__host__ __device__ __thrust_forceinline__
-Integer clz(Integer x)
-{
-  // XXX optimize by lowering to intrinsics
-  
-  Integer num_non_sign_bits = std::numeric_limits<Integer>::digits;
-  for(int i = num_non_sign_bits; i >= 0; --i)
-  {
-    if((1 << i) & x)
-    {
-      return num_non_sign_bits - i;
-    }
-  }
-
-  return num_non_sign_bits + 1;
-}
-
-
-template<typename Integer>
-__host__ __device__ __thrust_forceinline__
-bool is_power_of_2(Integer x)
-{
-  return 0 == (x & (x - 1));
-}
-
-
-template<typename Integer>
-__host__ __device__ __thrust_forceinline__
-Integer log2(Integer x)
-{
-  return std::numeric_limits<Integer>::digits - clz(x);
-}
-
-
-template<typename Integer>
-__host__ __device__ __thrust_forceinline__
-Integer log2_ri(Integer x)
-{
-  Integer result = log2(x);
-
-  // this is where we round up to the nearest log
-  if(!is_power_of_2(x))
-  {
-    ++result;
-  }
-
-  return result;
-}
-
-
-template<typename Integer>
-__host__ __device__ __thrust_forceinline__
-bool is_odd(Integer x)
-{
-  return 1 & x;
-}
-
-
 namespace block
 {
-
-
-template<typename Iterator1,
-         typename Size,
-         typename Iterator2,
-         typename Iterator3,
-         typename Compare>
-__device__ void merge(unsigned int work_per_thread,
-                      Iterator1 first1, Size n1,
-                      Iterator2 first2, Size n2,
-                      Iterator3 result,
-                      Compare comp)
-{
-  Size diag = min(n1 + n2, work_per_thread * threadIdx.x);
-  Size mp = merge_path(diag, first1, n1, first2, n2, comp);
-
-  // compute the ranges of the sources
-  Size start1 = mp;
-  Size start2 = diag - mp;
-
-  Size right_diag = min(n1 + n2, diag + work_per_thread);
-  // XXX we could alternatively shuffle to find the right_mp
-  Size right_mp = merge_path(right_diag, first1, n1, first2, n2, comp);
-  Size end1 = right_mp;
-  Size end2 = right_diag - right_mp;
-
-  // each thread does a sequential merge
-  thrust::merge(thrust::seq,
-                first1 + start1, first1 + end1,
-                first2 + start2, first2 + end2,
-                result + work_per_thread * threadIdx.x,
-                comp);
-  __syncthreads();
-}
 
 
 // block-wise inplace merge for when we have a static bound on the size of the result (block_size * work_per_thread)

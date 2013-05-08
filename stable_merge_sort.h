@@ -373,23 +373,20 @@ void locate_merge_paths(thrust::system::cuda::execution_policy<DerivedPolicy> &e
 }
 
 
-template<typename DerivedPolicy, typename RandomAccessIterator, typename Compare>
-void stable_merge_sort(thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
-                       RandomAccessIterator first,
-                       RandomAccessIterator last,
-                       Compare comp)
+template<typename DerivedPolicy, typename RandomAccessIterator, typename Size, typename Compare>
+void stable_merge_sort_n(thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
+                         RandomAccessIterator first,
+                         Size n,
+                         Compare comp)
 {
   typedef typename thrust::iterator_value<RandomAccessIterator>::type T;
-  typedef typename thrust::iterator_difference<RandomAccessIterator>::type difference_type;
 
-  difference_type n = last - first;
+  const Size block_size = 256;
+  const Size work_per_thread = (sizeof(T) < 8) ?  11 : 7;
+  const Size work_per_block = block_size * work_per_thread;
 
-  const difference_type block_size = 256;
-  const difference_type work_per_thread = (sizeof(T) < 8) ?  11 : 7;
-  const difference_type work_per_block = block_size * work_per_thread;
-
-  difference_type num_blocks = thrust::detail::util::divide_ri(n, work_per_block);
-  difference_type num_passes = log2_ri(num_blocks);
+  Size num_blocks = thrust::detail::util::divide_ri(n, work_per_block);
+  Size num_passes = log2_ri(num_blocks);
 
   thrust::detail::temporary_array<T,DerivedPolicy> pong_buffer(exec, n);
   
@@ -399,19 +396,19 @@ void stable_merge_sort(thrust::system::cuda::execution_policy<DerivedPolicy> &ex
   bool ping = false;
   if(is_odd(num_passes))
   {
-    stable_sort_each_copy<block_size,work_per_thread>(exec, first, last, pong_buffer.begin(), comp);
+    stable_sort_each_copy<block_size,work_per_thread>(exec, first, first + n, pong_buffer.begin(), comp);
   }
   else
   {
-    stable_sort_each_copy<block_size,work_per_thread>(exec, first, last, first, comp);
+    stable_sort_each_copy<block_size,work_per_thread>(exec, first, first + n, first, comp);
     ping = true;
   }
 
-  thrust::detail::temporary_array<int,DerivedPolicy> merge_paths(exec, num_blocks + 1);
+  thrust::detail::temporary_array<Size,DerivedPolicy> merge_paths(exec, num_blocks + 1);
   
-  for(difference_type pass = 0; pass < num_passes; ++pass, ping = !ping)
+  for(Size pass = 0; pass < num_passes; ++pass, ping = !ping)
   {
-    difference_type num_blocks_per_merge = 2 << pass;
+    Size num_blocks_per_merge = 2 << pass;
 
     if(ping)
     {
@@ -426,6 +423,21 @@ void stable_merge_sort(thrust::system::cuda::execution_policy<DerivedPolicy> &ex
       merge_adjacent_partitions<block_size, work_per_thread>(exec, num_blocks_per_merge, pong_buffer.begin(), n, merge_paths.begin(), first, comp);
     }
   }
+}
+
+
+template<typename DerivedPolicy, typename RandomAccessIterator, typename Compare>
+void stable_merge_sort(thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
+                       RandomAccessIterator first,
+                       RandomAccessIterator last,
+                       Compare comp)
+{
+  typedef typename thrust::iterator_difference<RandomAccessIterator>::type difference_type;
+
+  difference_type n = last - first;
+
+  // XXX if n can fit into a 32b uint then use that
+  stable_merge_sort_n(exec, first, n, comp);
 }
 
 

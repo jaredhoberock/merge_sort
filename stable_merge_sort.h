@@ -197,14 +197,16 @@ void staged_bounded_merge(Iterator1 first1, Size1 n1,
 
 // Returns (start1, end1, start2, end2) into mergesort input lists between mp0 and mp1.
 __host__ __device__
-thrust::tuple<int,int,int,int> find_mergesort_interval(int3 frame, int num_blocks_per_merge, int block_idx, int num_elements_per_block, int n, int mp, int right_mp)
+thrust::tuple<int,int,int,int> find_mergesort_interval(int partition_first1, int partition_size, int num_blocks_per_merge, int block_idx, int num_elements_per_block, int n, int mp, int right_mp)
 {
+  int partition_first2 = partition_first1 + partition_size;
+
   // Locate diag from the start of the A sublist.
-  int diag = num_elements_per_block * block_idx - frame.x;
-  int start1 = frame.x + mp;
-  int end1 = min(n, frame.x + right_mp);
-  int start2 = min(n, frame.y + diag - mp);
-  int end2 = min(n, frame.y + diag + num_elements_per_block - right_mp);
+  int diag = num_elements_per_block * block_idx - partition_first1;
+  int start1 = partition_first1 + mp;
+  int end1 = min(n, partition_first1 + right_mp);
+  int start2 = min(n, partition_first2 + diag - mp);
+  int end2 = min(n, partition_first2 + diag + num_elements_per_block - right_mp);
   
   // The end partition of the last block for each merge operation is computed
   // and stored as the begin partition for the subsequent merge. i.e. it is
@@ -213,8 +215,8 @@ thrust::tuple<int,int,int,int> find_mergesort_interval(int3 frame, int num_block
   // in this merge operation.
   if(num_blocks_per_merge - 1 == ((num_blocks_per_merge - 1) & block_idx))
   {
-    end1 = min(n, frame.x + frame.z);
-    end2 = min(n, frame.y + frame.z);
+    end1 = min(n, partition_first1 + partition_size);
+    end2 = min(n, partition_first2 + partition_size);
   }
 
   return thrust::make_tuple(start1, end1, start2, end2);
@@ -225,10 +227,11 @@ __host__ __device__
 thrust::tuple<int,int,int,int> locate_merge_partitions(int n, int block_idx, int num_blocks_per_merge, int num_elements_per_block, int mp, int right_mp)
 {
   int first_block_in_partition = ~(num_blocks_per_merge - 1) & block_idx;
-  int size = num_elements_per_block * (num_blocks_per_merge >> 1);
-  int3 frame = make_int3(num_elements_per_block * first_block_in_partition, num_elements_per_block * first_block_in_partition + size, size);
+  int partition_size = num_elements_per_block * (num_blocks_per_merge >> 1);
 
-  return find_mergesort_interval(frame, num_blocks_per_merge, block_idx, num_elements_per_block, n, mp, right_mp);
+  int partition_first1 = num_elements_per_block * first_block_in_partition;
+
+  return find_mergesort_interval(partition_first1, partition_size, num_blocks_per_merge, block_idx, num_elements_per_block, n, mp, right_mp);
 }
 
 
@@ -264,7 +267,7 @@ struct merge_adjacent_partitions_closure
   __thrust_forceinline__ __device__
   void operator()()
   {
-    unsigned int work_per_block = block_size * work_per_thread;
+    Size work_per_block = block_size * work_per_thread;
     
     Size start1 = 0, end1 = 0, start2 = 0, end2 = 0;
 
@@ -307,7 +310,7 @@ void merge_adjacent_partitions(thrust::system::cuda::execution_policy<DerivedPol
 
   closure_type closure(num_blocks_per_merge, first, n, merge_paths, result, comp);
 
-  unsigned int num_blocks = thrust::detail::util::divide_ri(n, block_size * work_per_thread);
+  Size num_blocks = thrust::detail::util::divide_ri(n, block_size * work_per_thread);
 
   thrust::system::cuda::detail::detail::launch_closure(closure, num_blocks, block_size);
 }

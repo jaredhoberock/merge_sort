@@ -437,7 +437,8 @@ void stable_merge_sort(thrust::system::cuda::execution_policy<DerivedPolicy> &ex
   difference_type n = last - first;
 
   // if difference_type is large and n can fit into a 32b uint then use that
-  if(sizeof(difference_type) > sizeof(thrust::detail::uint32_t) && n <= std::numeric_limits<thrust::detail::uint32_t>::max())
+  difference_type threshold = std::numeric_limits<thrust::detail::uint32_t>::max();
+  if(sizeof(difference_type) > sizeof(thrust::detail::uint32_t) && n <= threshold)
   {
     stable_merge_sort_n(exec, first, static_cast<thrust::detail::uint32_t>(n), comp);
   }

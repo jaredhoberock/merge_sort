@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iostream>
+#include <limits>
 #include <moderngpu.cuh>
 #include <util/mgpucontext.h>
 #include <thrust/iterator/iterator_traits.h>
@@ -34,6 +35,65 @@ struct my_policy
 
 namespace stable_merge_sort_detail2
 {
+
+
+template<typename Integer>
+__host__ __device__ __thrust_forceinline__
+Integer clz(Integer x)
+{
+  // XXX optimize by lowering to intrinsics
+  
+  Integer num_non_sign_bits = std::numeric_limits<Integer>::digits;
+  for(Integer i = num_non_sign_bits; i >= 0; --i)
+  {
+    if((1 << i) & x)
+    {
+      return num_non_sign_bits - i;
+    }
+  }
+
+  return num_non_sign_bits + 1;
+}
+
+
+template<typename Integer>
+__host__ __device__ __thrust_forceinline__
+bool is_power_of_2(Integer x)
+{
+  return 0 == (x & (x - 1));
+}
+
+
+template<typename Integer>
+__host__ __device__ __thrust_forceinline__
+Integer log2(Integer x)
+{
+  return std::numeric_limits<Integer>::digits - clz(x);
+}
+
+
+template<typename Integer>
+__host__ __device__ __thrust_forceinline__
+Integer log2_ri(Integer x)
+{
+  Integer result = log2(x);
+
+  // this is where we round up to the nearest log
+  if(!is_power_of_2(x))
+  {
+    ++result;
+  }
+
+  return result;
+}
+
+
+template<typename Integer>
+__host__ __device__ __thrust_forceinline__
+bool is_odd(Integer x)
+{
+  return 1 & x;
+}
 
 
 namespace block
@@ -317,34 +377,31 @@ void stable_merge_sort(my_policy &exec,
                        Compare comp)
 {
   typedef typename thrust::iterator_value<RandomAccessIterator>::type T;
-  typename thrust::iterator_difference<RandomAccessIterator>::type n = last - first;
+  typedef typename thrust::iterator_difference<RandomAccessIterator>::type difference_type;
 
-  const int block_size = 256;
+  difference_type n = last - first;
 
-  const int work_per_thread = (sizeof(T) < 8) ?  11 : 7;
+  const difference_type block_size = 256;
+  const difference_type work_per_thread = (sizeof(T) < 8) ?  11 : 7;
+  const difference_type work_per_block = block_size * work_per_thread;
 
-  typedef mgpu::LaunchBoxVT<block_size, work_per_thread> Tuning;
-  int2 launch = Tuning::GetLaunchParams(*exec.ctx);
-  
-  const int work_per_block = block_size * work_per_thread;
-
-  int numBlocks = thrust::detail::util::divide_ri(n, work_per_block);
-  int numPasses = mgpu::FindLog2(numBlocks, true);
+  difference_type num_blocks = thrust::detail::util::divide_ri(n, work_per_block);
+  difference_type num_passes = log2_ri(num_blocks);
   
   MGPU_MEM(T) destDevice = exec.ctx->Malloc<T>(n);
   T* source = thrust::raw_pointer_cast(&*first);
   T* dest = destDevice->get();
-  
-  stable_sort_each_copy<block_size, work_per_thread>(source, source + n, (1 & numPasses) ? dest : source, comp);
-  if(1 & numPasses) std::swap(source, dest);
 
-  MGPU_MEM(int) merge_paths = exec.ctx->Malloc<T>(numBlocks + 1);
+  stable_sort_each_copy<block_size, work_per_thread>(source, source + n, is_odd(num_passes) ? dest : source, comp);
+  if(is_odd(num_passes)) std::swap(source, dest);
+
+  MGPU_MEM(int) merge_paths = exec.ctx->Malloc<T>(num_blocks + 1);
   
-  for(int pass = 0; pass < numPasses; ++pass)
+  for(difference_type pass = 0; pass < num_passes; ++pass)
   {
-    int num_blocks_per_merge = 2 << pass;
+    difference_type num_blocks_per_merge = 2 << pass;
 
-    locate_merge_paths(merge_paths->get(), numBlocks + 1, source, n, work_per_block, num_blocks_per_merge, comp);
+    locate_merge_paths(merge_paths->get(), num_blocks + 1, source, n, work_per_block, num_blocks_per_merge, comp);
 
     merge_adjacent_partitions<block_size, work_per_thread>(num_blocks_per_merge, source, n, merge_paths->get(), dest, comp);
 

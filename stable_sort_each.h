@@ -23,7 +23,6 @@ struct impl
   static __device__
   void do_it(Iterator keys, Compare comp)
   {
-    #pragma unroll
     for(int j = 1 & i; j < n - 1; j += 2)
     {
       if(comp(keys[j + 1], keys[j]))
@@ -64,7 +63,6 @@ template<unsigned int bound_n, typename RandomAccessIterator1, typename Size, ty
 __device__
 void bounded_copy_n(RandomAccessIterator1 first, Size n, RandomAccessIterator2 result)
 {
-  #pragma unroll
   for(unsigned int i = 0; i < bound_n; ++i)
   {
     if(i < n)
@@ -153,7 +151,6 @@ void bounded_stable_sort(Context &ctx,
   {
     value_type max_key = local_keys[0];
 
-    #pragma unroll
     for(unsigned int i = 1; i < work_per_thread; ++i)
     {
       if(i < local_tile_size)
@@ -163,7 +160,6 @@ void bounded_stable_sort(Context &ctx,
     }
     
     // fill in the remainder with max_key
-    #pragma unroll
     for(unsigned int i = 0; i < work_per_thread; ++i)
     {
       if(i >= local_tile_size)

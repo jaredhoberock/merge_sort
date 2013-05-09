@@ -1,7 +1,6 @@
 #pragma once
 
 #include <map>
-#include <iostream>
 #include <cstddef>
 #include <thrust/system/cuda/memory.h>
 #include <stdexcept>
@@ -29,8 +28,6 @@ class cached_allocator
 
       if(free_block != free_blocks.end())
       {
-        std::cout << "cached_allocator::allocator(): found a hit" << std::endl;
-
         // get the pointer
         result = free_block->second;
 
@@ -44,8 +41,6 @@ class cached_allocator
         // throw if cuda::malloc can't satisfy the request
         try
         {
-          std::cout << "cached_allocator::allocator(): no free block found; calling cuda::malloc" << std::endl;
-
           // allocate memory and convert cuda::pointer to raw pointer
           result = thrust::cuda::malloc<char>(num_bytes).get();
         }
@@ -81,8 +76,6 @@ class cached_allocator
 
     void free_all()
     {
-      std::cout << "cached_allocator::free_all(): cleaning up after ourselves..." << std::endl;
-
       // deallocate all outstanding blocks in both lists
       for(free_blocks_type::iterator i = free_blocks.begin();
           i != free_blocks.end();

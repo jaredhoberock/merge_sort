@@ -209,28 +209,36 @@ struct stable_sort_each_copy_closure
   {}
 
 
-  __device__ __forceinline__
-  void operator()()
+  template<typename RandomAccessIterator>
+  __device__ __thrust_forceinline__
+  void operator()(RandomAccessIterator staging_buffer)
   {
-    typedef typename thrust::iterator_value<RandomAccessIterator1>::type value_type;
-
     context_type ctx;
 
     unsigned int work_per_block = ctx.block_dimension() * work_per_thread;
     unsigned int offset = work_per_block * ctx.block_index();
     unsigned int tile_size = thrust::min<unsigned int>(work_per_block, n - offset);
-
-    // stage this operation through smem
-    __shared__ thrust::system::cuda::detail::detail::uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;;
     
-    // load input tile into smem
-    ::block::copy_n_global_to_shared<work_per_thread>(ctx, first + offset, tile_size, s_keys.begin());
+    // load input tile into buffer
+    ::block::copy_n_global_to_shared<work_per_thread>(ctx, first + offset, tile_size, staging_buffer);
 
-    // sort input in smem
-    ::block::bounded_stable_sort<work_per_thread>(ctx, s_keys.begin(), tile_size, comp);
+    // sort input in buffer
+    ::block::bounded_stable_sort<work_per_thread>(ctx, staging_buffer, tile_size, comp);
     
     // store result to gmem
-    ::block::copy_n(ctx, s_keys.begin(), tile_size, result + offset);
+    ::block::copy_n(ctx, staging_buffer, tile_size, result + offset);
+  }
+
+
+  __device__ __thrust_forceinline__
+  void operator()()
+  {
+    typedef typename thrust::iterator_value<RandomAccessIterator1>::type value_type;
+
+    using thrust::system::cuda::detail::detail::uninitialized_array;
+    __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
+    
+    this->operator()(s_keys.begin());
   }
 };
 

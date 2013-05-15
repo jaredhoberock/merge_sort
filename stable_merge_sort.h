@@ -74,29 +74,26 @@ template<unsigned int block_size,
          typename Iterator1, typename Size1,
          typename Iterator2, typename Size2,
          typename Iterator3,
+         typename Iterator4,
 	 typename Compare>
 __device__
 void staged_bounded_merge(Context &ctx,
                           Iterator1 first1, Size1 n1,
                           Iterator2 first2, Size2 n2,
-                          Iterator3 result,
+                          Iterator3 staging_buffer,
+                          Iterator4 result,
                           Compare comp)
 {
-  typedef typename thrust::iterator_value<Iterator3>::type value_type;
-
-  using thrust::system::cuda::detail::detail::uninitialized_array;
-  __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
-
-  // stage the input through shared memory.
-  ::block::async_copy_n_global_to_shared<work_per_thread>(ctx, first1, n1, s_keys.begin());
-  ::block::async_copy_n_global_to_shared<work_per_thread>(ctx, first2, n2, s_keys.begin() + n1);
+  // stage the input through the buffer
+  ::block::async_copy_n_global_to_shared<work_per_thread>(ctx, first1, n1, staging_buffer);
+  ::block::async_copy_n_global_to_shared<work_per_thread>(ctx, first2, n2, staging_buffer + n1);
   ctx.barrier();
 
   // cooperatively merge in place
-  block::bounded_inplace_merge<work_per_thread>(ctx, s_keys.begin(), n1, n2, comp);
+  block::bounded_inplace_merge<work_per_thread>(ctx, staging_buffer, n1, n2, comp);
   
-  // store result in smem to result
-  ::block::copy_n(ctx, s_keys.begin(), n1 + n2, result);
+  // store result in buffer to result
+  ::block::copy_n(ctx, staging_buffer, n1 + n2, result);
 }
 
 
@@ -173,7 +170,7 @@ struct merge_adjacent_partitions_closure
 
 
   __thrust_forceinline__ __device__
-  void operator()()
+  void operator()(typename thrust::iterator_value<Iterator1>::type *staging_buffer)
   {
     context_type ctx;
 
@@ -183,12 +180,25 @@ struct merge_adjacent_partitions_closure
 
     thrust::tie(start1,end1,start2,end2) =
       locate_merge_partitions(n, blockIdx.x, num_blocks_per_merge, work_per_block, merge_paths[ctx.block_index()], merge_paths[ctx.block_index() + 1]);
-    
+
     block::staged_bounded_merge<block_size, work_per_thread>(ctx,
                                                              first + start1, end1 - start1,
                                                              first + start2, end2 - start2,
+                                                             staging_buffer,
                                                              result + blockIdx.x * work_per_block,
                                                              comp);
+  }
+
+
+  __thrust_forceinline__ __device__
+  void operator()()
+  {
+    typedef typename thrust::iterator_value<Iterator1>::type value_type;
+
+    using thrust::system::cuda::detail::detail::uninitialized_array;
+    __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
+    
+    this->operator()(s_keys.begin());
   }
 };
 

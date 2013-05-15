@@ -306,6 +306,11 @@ void stable_merge_sort_n(thrust::system::cuda::execution_policy<DerivedPolicy> &
   typedef typename thrust::iterator_value<RandomAccessIterator>::type T;
 
   const Size block_size = 256;
+
+  typedef thrust::system::cuda::detail::detail::statically_blocked_thread_array<block_size> context_type;
+
+  context_type context;
+
   const Size work_per_thread = (sizeof(T) < 8) ?  11 : 7;
   const Size work_per_block = block_size * work_per_thread;
 
@@ -320,11 +325,11 @@ void stable_merge_sort_n(thrust::system::cuda::execution_policy<DerivedPolicy> &
   bool ping = false;
   if(is_odd(num_passes))
   {
-    stable_sort_each_copy<block_size,work_per_thread>(exec, first, first + n, pong_buffer.begin(), comp);
+    stable_sort_each_copy<work_per_thread>(exec, context, block_size, first, first + n, pong_buffer.begin(), comp);
   }
   else
   {
-    stable_sort_each_copy<block_size,work_per_thread>(exec, first, first + n, first, comp);
+    stable_sort_each_copy<work_per_thread>(exec, context, block_size, first, first + n, first, comp);
     ping = true;
   }
 

@@ -186,15 +186,15 @@ void bounded_stable_sort(Context &ctx,
 } // end block
 
 
-template<unsigned int block_size,
-         unsigned int work_per_thread,
+template<unsigned int work_per_thread,
+         typename Context,
          typename RandomAccessIterator1,
          typename Size,
          typename RandomAccessIterator2,
          typename Compare>
 struct stable_sort_each_copy_closure
 {
-  typedef thrust::system::cuda::detail::detail::statically_blocked_thread_array<block_size> context_type;
+  typedef Context context_type;
 
   RandomAccessIterator1 first;
   Size n;
@@ -235,21 +235,24 @@ struct stable_sort_each_copy_closure
   {
     typedef typename thrust::iterator_value<RandomAccessIterator1>::type value_type;
 
-    using thrust::system::cuda::detail::detail::uninitialized_array;
-    __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
+    // stage this operation through smem
+    // the size of this array is block_size * (work_per_thread + 1)
+    value_type *s_keys = thrust::system::cuda::detail::extern_shared_ptr<value_type>();
     
-    this->operator()(s_keys.begin());
+    this->operator()(s_keys);
   }
 };
 
 
-template<unsigned int block_size,
-         unsigned int work_per_thread,
+template<unsigned int work_per_thread,
          typename DerivedPolicy,
+         typename Context,
          typename RandomAccessIterator1,
          typename RandomAccessIterator2,
          typename Compare>
 void stable_sort_each_copy(thrust::system::cuda::execution_policy<DerivedPolicy> &,
+                           Context context,
+                           unsigned int block_size,
                            RandomAccessIterator1 first, RandomAccessIterator1 last,
                            RandomAccessIterator2 result,
                            Compare comp)
@@ -261,8 +264,8 @@ void stable_sort_each_copy(thrust::system::cuda::execution_policy<DerivedPolicy>
   int num_blocks = thrust::detail::util::divide_ri(n, block_size * work_per_thread);
 
   typedef stable_sort_each_copy_closure<
-    block_size,
     work_per_thread,
+    Context,
     RandomAccessIterator1,
     difference_type,
     RandomAccessIterator2,
@@ -271,6 +274,10 @@ void stable_sort_each_copy(thrust::system::cuda::execution_policy<DerivedPolicy>
   
   closure_type closure(first, n, result, comp);
 
-  thrust::system::cuda::detail::detail::launch_closure(closure, num_blocks, block_size);
+  typedef typename thrust::iterator_value<RandomAccessIterator1>::type value_type;
+
+  unsigned int num_smem_bytes = block_size * (work_per_thread + 1) * sizeof(value_type);
+
+  thrust::system::cuda::detail::detail::launch_closure(closure, num_blocks, block_size, num_smem_bytes);
 }
 

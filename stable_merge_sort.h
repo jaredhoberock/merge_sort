@@ -68,8 +68,7 @@ __device__ void bounded_inplace_merge(Context &ctx, Iterator first, Size n1, Siz
 
 
 // staged, block-wise merge for when we have a static bound on the size of the result (block_size * work_per_thread)
-template<unsigned int block_size,
-         unsigned int work_per_thread,
+template<unsigned int work_per_thread,
          typename Context,
          typename Iterator1, typename Size1,
          typename Iterator2, typename Size2,
@@ -140,8 +139,8 @@ thrust::tuple<int,int,int,int> locate_merge_partitions(int n, int block_idx, int
 }
 
 
-template<unsigned int block_size,
-         unsigned int work_per_thread,
+template<unsigned int work_per_thread,
+         typename Context,
          typename Size,
          typename Iterator1,
          typename Iterator2,
@@ -149,7 +148,7 @@ template<unsigned int block_size,
          typename Compare>
 struct merge_adjacent_partitions_closure
 {
-  typedef thrust::system::cuda::detail::detail::statically_blocked_thread_array<block_size> context_type;
+  typedef Context context_type;
 
   Size num_blocks_per_merge;
   Iterator1 first;
@@ -181,12 +180,12 @@ struct merge_adjacent_partitions_closure
     thrust::tie(start1,end1,start2,end2) =
       locate_merge_partitions(n, blockIdx.x, num_blocks_per_merge, work_per_block, merge_paths[ctx.block_index()], merge_paths[ctx.block_index() + 1]);
 
-    block::staged_bounded_merge<block_size, work_per_thread>(ctx,
-                                                             first + start1, end1 - start1,
-                                                             first + start2, end2 - start2,
-                                                             staging_buffer,
-                                                             result + blockIdx.x * work_per_block,
-                                                             comp);
+    block::staged_bounded_merge<work_per_thread>(ctx,
+                                                 first + start1, end1 - start1,
+                                                 first + start2, end2 - start2,
+                                                 staging_buffer,
+                                                 result + blockIdx.x * work_per_block,
+                                                 comp);
   }
 
 
@@ -195,23 +194,26 @@ struct merge_adjacent_partitions_closure
   {
     typedef typename thrust::iterator_value<Iterator1>::type value_type;
 
-    using thrust::system::cuda::detail::detail::uninitialized_array;
-    __shared__ uninitialized_array<value_type, block_size * (work_per_thread + 1)> s_keys;
+    // stage this operation through smem
+    // the size of this array is block_size * (work_per_thread + 1)
+    value_type *s_keys = thrust::system::cuda::detail::extern_shared_ptr<value_type>();
     
-    this->operator()(s_keys.begin());
+    this->operator()(s_keys);
   }
 };
 
 
-template<unsigned int block_size,
-         unsigned int work_per_thread,
+template<unsigned int work_per_thread,
          typename DerivedPolicy,
+         typename Context,
          typename Size,
          typename Iterator1,
          typename Iterator2,
          typename Iterator3,
          typename Compare>
 void merge_adjacent_partitions(thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
+                               Context context,
+                               unsigned int block_size,
                                Size num_blocks_per_merge,
                                Iterator1 first,
                                Size n,
@@ -220,8 +222,8 @@ void merge_adjacent_partitions(thrust::system::cuda::execution_policy<DerivedPol
                                Compare comp)
 {
   typedef merge_adjacent_partitions_closure<
-    block_size,
     work_per_thread,
+    Context,
     Size,
     Iterator1,
     Iterator2,
@@ -233,7 +235,10 @@ void merge_adjacent_partitions(thrust::system::cuda::execution_policy<DerivedPol
 
   Size num_blocks = thrust::detail::util::divide_ri(n, block_size * work_per_thread);
 
-  thrust::system::cuda::detail::detail::launch_closure(closure, num_blocks, block_size);
+  typedef typename thrust::iterator_value<Iterator1>::type value_type;
+  Size num_smem_bytes = block_size * (work_per_thread + 1) * sizeof(value_type);
+
+  thrust::system::cuda::detail::detail::launch_closure(closure, num_blocks, block_size, num_smem_bytes);
 }
 
 
@@ -343,13 +348,13 @@ void stable_merge_sort_n(thrust::system::cuda::execution_policy<DerivedPolicy> &
     {
       locate_merge_paths(exec, merge_paths.begin(), merge_paths.size(), first, n, work_per_block, num_blocks_per_merge, comp);
 
-      merge_adjacent_partitions<block_size, work_per_thread>(exec, num_blocks_per_merge, first, n, merge_paths.begin(), pong_buffer.begin(), comp);
+      merge_adjacent_partitions<work_per_thread>(exec, context, block_size, num_blocks_per_merge, first, n, merge_paths.begin(), pong_buffer.begin(), comp);
     }
     else
     {
       locate_merge_paths(exec, merge_paths.begin(), merge_paths.size(), pong_buffer.begin(), n, work_per_block, num_blocks_per_merge, comp);
 
-      merge_adjacent_partitions<block_size, work_per_thread>(exec, num_blocks_per_merge, pong_buffer.begin(), n, merge_paths.begin(), first, comp);
+      merge_adjacent_partitions<work_per_thread>(exec, context, block_size, num_blocks_per_merge, pong_buffer.begin(), n, merge_paths.begin(), first, comp);
     }
   }
 }

@@ -19,8 +19,9 @@
 #include "stable_sort_each.h"
 #include "copy.h"
 #include "merge.h"
-#include "cached_allocator.h"
 #include "util.h"
+#include "cached_allocator.h"
+#include "virtualized_smem_closure.h"
 
 
 namespace stable_merge_sort_detail2
@@ -209,6 +210,7 @@ template<unsigned int work_per_thread,
          typename Size,
          typename Iterator1,
          typename Iterator2,
+         typename Pointer,
          typename Iterator3,
          typename Compare>
 void merge_adjacent_partitions(thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
@@ -218,6 +220,7 @@ void merge_adjacent_partitions(thrust::system::cuda::execution_policy<DerivedPol
                                Iterator1 first,
                                Size n,
                                Iterator2 merge_paths,
+                               Pointer virtual_smem,
                                Iterator3 result,
                                Compare comp)
 {
@@ -236,9 +239,22 @@ void merge_adjacent_partitions(thrust::system::cuda::execution_policy<DerivedPol
   Size num_blocks = thrust::detail::util::divide_ri(n, block_size * work_per_thread);
 
   typedef typename thrust::iterator_value<Iterator1>::type value_type;
-  Size num_smem_bytes = block_size * (work_per_thread + 1) * sizeof(value_type);
 
-  thrust::system::cuda::detail::detail::launch_closure(closure, num_blocks, block_size, num_smem_bytes);
+  const size_t num_smem_elements_per_block = block_size * (work_per_thread + 1);
+
+  // XXX this virtualizing code can probably be generalized and moved elsewhere
+  if(virtual_smem)
+  {
+    virtualized_smem_closure<closure_type, Pointer> virtualized_closure(closure, num_smem_elements_per_block, virtual_smem);
+
+    thrust::system::cuda::detail::detail::launch_closure(virtualized_closure, num_blocks, block_size);
+  }
+  else
+  {
+    const size_t num_smem_bytes = num_smem_elements_per_block * sizeof(value_type);
+
+    thrust::system::cuda::detail::detail::launch_closure(closure, num_blocks, block_size, num_smem_bytes);
+  }
 }
 
 
@@ -371,13 +387,13 @@ void stable_merge_sort_n(thrust::system::cuda::execution_policy<DerivedPolicy> &
     {
       locate_merge_paths(exec, merge_paths.begin(), merge_paths.size(), first, n, work_per_block, num_blocks_per_merge, comp);
 
-      merge_adjacent_partitions<work_per_thread>(exec, context, block_size, num_blocks_per_merge, first, n, merge_paths.begin(), pong_buffer.begin(), comp);
+      merge_adjacent_partitions<work_per_thread>(exec, context, block_size, num_blocks_per_merge, first, n, merge_paths.begin(), thrust::raw_pointer_cast(&*virtual_smem.begin()), pong_buffer.begin(), comp);
     }
     else
     {
       locate_merge_paths(exec, merge_paths.begin(), merge_paths.size(), pong_buffer.begin(), n, work_per_block, num_blocks_per_merge, comp);
 
-      merge_adjacent_partitions<work_per_thread>(exec, context, block_size, num_blocks_per_merge, pong_buffer.begin(), n, merge_paths.begin(), first, comp);
+      merge_adjacent_partitions<work_per_thread>(exec, context, block_size, num_blocks_per_merge, pong_buffer.begin(), n, merge_paths.begin(), thrust::raw_pointer_cast(&*virtual_smem.begin()), first, comp);
     }
   }
 }

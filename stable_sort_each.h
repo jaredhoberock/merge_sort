@@ -281,6 +281,7 @@ void stable_sort_each_copy(thrust::system::cuda::execution_policy<DerivedPolicy>
 
   const size_t num_smem_elements_per_block = block_size * (work_per_thread + 1);
 
+  // XXX this virtualizing code can probably be generalized and moved elsewhere
   if(virtual_smem)
   {
     virtualized_smem_closure<closure_type, Pointer> virtualized_closure(closure, num_smem_elements_per_block, virtual_smem);

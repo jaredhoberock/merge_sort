@@ -302,6 +302,24 @@ void locate_merge_paths(thrust::system::cuda::execution_policy<DerivedPolicy> &e
 }
 
 
+template<typename T>
+bool virtualize_smem(size_t num_elements_per_block)
+{
+  size_t num_smem_bytes_required = num_elements_per_block * sizeof(T);
+
+  thrust::system::cuda::detail::device_properties_t props = thrust::system::cuda::detail::device_properties();
+
+  size_t num_smem_bytes_available = props.sharedMemPerBlock;
+  if(props.major == 1)
+  {
+    // pay the kernel parameters tax on Tesla
+    num_smem_bytes_available -= 256;
+  }
+
+  return num_smem_bytes_required > num_smem_bytes_available;
+}
+
+
 template<typename DerivedPolicy, typename RandomAccessIterator, typename Size, typename Compare>
 void stable_merge_sort_n(thrust::system::cuda::execution_policy<DerivedPolicy> &exec,
                          RandomAccessIterator first,
@@ -320,21 +338,26 @@ void stable_merge_sort_n(thrust::system::cuda::execution_policy<DerivedPolicy> &
   const Size work_per_block = block_size * work_per_thread;
 
   Size num_blocks = thrust::detail::util::divide_ri(n, work_per_block);
-  Size num_passes = log2_ri(num_blocks);
 
-  thrust::detail::temporary_array<T,DerivedPolicy> pong_buffer(exec, n);
+  const unsigned int num_smem_elements_per_block = block_size * (work_per_thread + 1);
+
+  thrust::detail::temporary_array<T,DerivedPolicy> virtual_smem(exec, virtualize_smem<T>(num_smem_elements_per_block) ? (num_blocks * num_smem_elements_per_block) : 0);
   
   // depending on the number of passes
   // we'll either do the initial segmented sort inplace or not
   // ping being true means the latest data is in the source array
   bool ping = false;
+  thrust::detail::temporary_array<T,DerivedPolicy> pong_buffer(exec, n);
+
+  Size num_passes = log2_ri(num_blocks);
+
   if(is_odd(num_passes))
   {
-    stable_sort_each_copy<work_per_thread>(exec, context, block_size, first, first + n, pong_buffer.begin(), comp);
+    stable_sort_each_copy<work_per_thread>(exec, context, block_size, first, first + n, thrust::raw_pointer_cast(&*virtual_smem.begin()), pong_buffer.begin(), comp);
   }
   else
   {
-    stable_sort_each_copy<work_per_thread>(exec, context, block_size, first, first + n, first, comp);
+    stable_sort_each_copy<work_per_thread>(exec, context, block_size, first, first + n, thrust::raw_pointer_cast(&*virtual_smem.begin()), first, comp);
     ping = true;
   }
 
